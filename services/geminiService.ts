@@ -1,200 +1,250 @@
+/**
+ * Enrichissement éditorial des parcours.
+ *
+ * L'IA ne choisit plus les lieux, ne compte plus les étapes et ne calcule plus
+ * les distances : tout cela vient d'OpenStreetMap et du planificateur. Elle
+ * n'écrit que les textes, à partir de lieux qui existent vraiment.
+ */
 
-import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { AppState, POI, GeneratedRoute, CitySize } from "../types.ts";
+import { GoogleGenAI, Type, Schema } from '@google/genai';
+import { CityInfo, GeneratedRoute, POI, PoiTheme, POI_THEMES } from '../types';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const ENRICH_MODEL = 'gemini-3-flash-preview';
+const SUGGEST_MODEL = 'gemini-3-flash-preview';
 
-const flatRouteSchema: Schema = {
-    type: Type.OBJECT,
-    properties: {
-        title: { type: Type.STRING },
-        totalDistance: { type: Type.STRING, description: "Distance réelle calculée (ex: 3.2 km)" },
-        estimatedDuration: { type: Type.STRING, description: "Durée réelle : marche + arrêts (ex: 1h15)" },
-        category: { type: Type.STRING },
-        theme: { type: Type.STRING },
-        lastStepAnecdote: { type: Type.STRING },
-        steps: {
+/** Nombre de parcours enrichis par appel : au-delà les réponses se dégradent. */
+const BATCH_SIZE = 3;
+
+let client: GoogleGenAI | null = null;
+
+const getClient = (): GoogleGenAI => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === 'PLACEHOLDER_API_KEY') {
+    throw new Error(
+      "Clé Gemini absente : renseignez GEMINI_API_KEY dans .env.local, ou désactivez l'enrichissement IA."
+    );
+  }
+  if (!client) client = new GoogleGenAI({ apiKey });
+  return client;
+};
+
+export const hasApiKey = (): boolean => {
+  const key = process.env.GEMINI_API_KEY;
+  return Boolean(key) && key !== 'PLACEHOLDER_API_KEY';
+};
+
+// --------------------------------------------------------------------------
+// Enrichissement des parcours
+// --------------------------------------------------------------------------
+
+const enrichmentSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    routes: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          routeIndex: { type: Type.INTEGER, description: 'Index du parcours, tel que fourni' },
+          title: { type: Type.STRING, description: 'Titre court et évocateur, 3 à 6 mots' },
+          intro: { type: Type.STRING, description: 'Accroche du parcours, 25 à 40 mots' },
+          steps: {
             type: Type.ARRAY,
-            description: "Liste exhaustive de toutes les étapes du parcours",
             items: {
-                type: Type.OBJECT,
-                properties: {
-                    n: { type: Type.INTEGER, description: "Numéro de l'étape" },
-                    name: { type: Type.STRING },
-                    addr: { type: Type.STRING },
-                    lat: { type: Type.NUMBER },
-                    lng: { type: Type.NUMBER },
-                    cat: { type: Type.STRING },
-                    desc: { type: Type.STRING, description: "Description immersive de l'ambiance (30-45 mots)" },
-                    hist: { type: Type.STRING, description: "Anecdote historique concrète ou rappel à l'histoire du lieu (25-35 mots)" },
-                },
-                required: ["n", "name", "addr", "lat", "lng", "desc", "hist"],
+              type: Type.OBJECT,
+              properties: {
+                n: { type: Type.INTEGER, description: "Numéro de l'étape, tel que fourni" },
+                desc: { type: Type.STRING, description: 'Description sensorielle du lieu, 25 à 40 mots' },
+                anecdote: { type: Type.STRING, description: 'Fait historique concret, 20 à 35 mots' },
+              },
+              required: ['n', 'desc', 'anecdote'],
             },
+          },
         },
+        required: ['routeIndex', 'title', 'intro', 'steps'],
+      },
     },
-    required: ["title", "totalDistance", "estimatedDuration", "category", "theme", "lastStepAnecdote", "steps"],
+  },
+  required: ['routes'],
 };
 
-const getPackStructure = (size: CitySize) => {
-    if (size === 'Compacte') return {
-        count: 11,
-        categories: { C1: 4, C2: 5, C3: 2, C4: 0 },
-        themes: { 'Historique & Patrimoine': 4, 'Panoramas & Points de vue': 2, 'Nature & Balades': 3, 'Street art & Insolite': 2 }
+const describeRoutesForPrompt = (routes: GeneratedRoute[], offset: number): string =>
+  routes
+    .map((route, i) => {
+      const steps = route.steps
+        .map((s) => `    ${s.stepNumber}. ${s.name} (${s.subtype}, ${s.theme})`)
+        .join('\n');
+      return `Parcours ${offset + i} — ${route.summary.stopsCount} étapes, ${route.summary.totalDistanceKm} km, thème dominant « ${route.summary.theme} » :\n${steps}`;
+    })
+    .join('\n\n');
+
+const enrichBatch = async (
+  city: CityInfo,
+  routes: GeneratedRoute[],
+  offset: number
+): Promise<GeneratedRoute[]> => {
+  const ai = getClient();
+
+  const prompt = `Tu es guide-conférencier à ${city.name} (${city.displayName}).
+
+Voici des parcours à pied déjà construits. Les lieux, leur ordre et leur nombre sont FIXES : ne les modifie pas, n'en ajoute pas, n'en retire pas.
+
+${describeRoutesForPrompt(routes, offset)}
+
+Pour chaque parcours, rédige :
+- un titre court et évocateur ;
+- une accroche de 25 à 40 mots ;
+- pour CHAQUE étape, une description sensorielle (25-40 mots) et une anecdote historique concrète (20-35 mots).
+
+Règles :
+- Reprends exactement les numéros d'étape et les index de parcours fournis.
+- Si tu ne connais pas un lieu précis, décris-le à partir de son type et de son quartier, sans inventer de fait daté.
+- Écris en français, au présent, sans superlatif creux.`;
+
+  const response = await ai.models.generateContent({
+    model: ENRICH_MODEL,
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: enrichmentSchema,
+      temperature: 0.7,
+    },
+  });
+
+  const parsed = JSON.parse(response.text || '{}');
+  const byIndex = new Map<number, any>();
+  (parsed.routes || []).forEach((r: any) => byIndex.set(r.routeIndex, r));
+
+  return routes.map((route, i) => {
+    const enrichment = byIndex.get(offset + i);
+    if (!enrichment) return route;
+
+    const stepTexts = new Map<number, any>();
+    (enrichment.steps || []).forEach((s: any) => stepTexts.set(s.n, s));
+
+    return {
+      ...route,
+      summary: {
+        ...route.summary,
+        title: enrichment.title || route.summary.title,
+        intro: enrichment.intro,
+      },
+      steps: route.steps.map((step) => {
+        const text = stepTexts.get(step.stepNumber);
+        return text ? { ...step, description: text.desc, anecdote: text.anecdote } : step;
+      }),
     };
-    if (size === 'Standard') return {
-        count: 16,
-        categories: { C1: 5, C2: 7, C3: 3, C4: 1 },
-        themes: { 'Historique & Patrimoine': 5, 'Panoramas & Points de vue': 4, 'Nature & Balades': 4, 'Street art & Insolite': 3 }
-    };
-    if (size === 'Métropole') return {
-        count: 26,
-        categories: { C1: 7, C2: 10, C3: 6, C4: 3 },
-        themes: { 'Historique & Patrimoine': 8, 'Panoramas & Points de vue': 7, 'Nature & Balades': 6, 'Street art & Insolite': 5 }
-    };
-    return { count: 1, categories: { C5: 1 }, themes: { 'Historique & Patrimoine': 1 } };
+  });
 };
 
-const getPOIConfig = (cat: string) => {
-    if (cat === 'C1') return { stops: 8, dist: "1.5-2km", dur: "30-40min" };
-    if (cat === 'C2') return { stops: 10, dist: "2.1-3km", dur: "45-60min" };
-    if (cat === 'C3') return { stops: 13, dist: "3.1-4km", dur: "75-90min" };
-    if (cat === 'C4') return { stops: 17, dist: "6-10km", dur: "1h30-2h30" };
-    return { stops: 15, dist: "Variable", dur: "Libre" };
-};
+/**
+ * Enrichit tous les parcours, par lots.
+ *
+ * Un lot qui échoue n'invalide pas les autres : le parcours ressort avec ses
+ * données factuelles, simplement sans texte. Mieux vaut un parcours sobre
+ * qu'aucun parcours.
+ */
+export const enrichRoutes = async (
+  city: CityInfo,
+  routes: GeneratedRoute[],
+  onProgress?: (done: number, total: number) => void
+): Promise<{ routes: GeneratedRoute[]; failures: number }> => {
+  const enriched: GeneratedRoute[] = [];
+  let failures = 0;
 
-export const generateRoute = async (state: AppState): Promise<GeneratedRoute[]> => {
-    const { city, citySize, isFullPackMode, isAdvancedMode, numberOfAlternatives, numberOfStops, forceExactStops, forcedStopsValue } = state;
-    
-    let routesToGenerate: { category: string; theme: string; stops: number; targetDist?: string }[] = [];
-
-    if (isFullPackMode) {
-        const structure = getPackStructure(citySize);
-        const cats = Object.entries(structure.categories).flatMap(([c, n]) => Array(n).fill(c));
-        const themes = Object.entries(structure.themes).flatMap(([t, n]) => Array(n).fill(t));
-        routesToGenerate = cats.map((cat, i) => {
-            const config = getPOIConfig(cat);
-            return { category: cat, theme: themes[i] || themes[0], stops: config.stops, targetDist: config.dist };
-        });
-    } else {
-        const stopsCount = forceExactStops ? forcedStopsValue : numberOfStops;
-        const count = isAdvancedMode ? numberOfAlternatives : (numberOfAlternatives || 1);
-        for(let i=0; i < count; i++) {
-            routesToGenerate.push({ 
-                category: state.routeCategory, 
-                theme: state.themes[0] || 'Historique & Patrimoine', 
-                stops: stopsCount 
-            });
-        }
-    }
-
-    const packCount = routesToGenerate.length;
-    const routesDetailsString = routesToGenerate.map((r, i) => 
-        `- Parcours #${i+1} : Thème "${r.theme}", Catégorie "${r.category}", DOIT CONTENIR EXACTEMENT ${r.stops} ÉTAPES (POI).`
-    ).join('\n');
-
-    const prompt = `
-        Tu es un expert historien et guide local pour la ville de ${city}. 
-        Génère EXACTEMENT ${packCount} parcours uniques avec les caractéristiques suivantes :
-        
-        ${routesDetailsString}
-
-        CONSIGNES DE RÉDACTION POUR CHAQUE ÉTAPE :
-        1. "desc" : Description immersive et sensorielle (20-30 mots).
-        2. "hist" : Anecdote historique concrète (20-30 mots).
-        
-        RÈGLES DE STRUCTURE CRITIQUES :
-        - Pour chaque parcours, le tableau "steps" doit avoir la longueur exacte demandée ci-dessus.
-        - Ne résume pas les parcours. Liste chaque lieu un par un de 1 à N.
-        - Chaque étape DOIT avoir son anecdote historique propre.
-        - Vérifie la cohérence géographique des coordonnées (lat/lng) pour que le parcours soit marchable.
-    `;
-
+  for (let offset = 0; offset < routes.length; offset += BATCH_SIZE) {
+    const batch = routes.slice(offset, offset + BATCH_SIZE);
     try {
-        const response = await ai.models.generateContent({
-            model: "gemini-3.1-pro-preview",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                    type: Type.OBJECT,
-                    properties: {
-                        routes: { 
-                            type: Type.ARRAY, 
-                            items: flatRouteSchema,
-                            description: `Liste de ${packCount} objets parcours`
-                        }
-                    },
-                    required: ["routes"]
-                },
-                temperature: 0.2, // Réduit pour plus de rigueur sur le format JSON et le nombre d'étapes
-            },
-        });
-
-        const text = response.text || "{}";
-        const json = JSON.parse(text);
-        
-        const results: GeneratedRoute[] = (json.routes || []).map((r: any, index: number) => ({
-            id: `route-${Date.now()}-${index}`,
-            createdAt: new Date().toISOString(),
-            summary: {
-                title: r.title,
-                totalDistance: r.totalDistance,
-                estimatedDuration: r.estimatedDuration,
-                category: r.category,
-                theme: r.theme,
-                lastStepAnecdote: r.lastStepAnecdote,
-                city: city
-            },
-            steps: (r.steps || []).map((s: any) => ({
-                stepNumber: s.n,
-                name: s.name,
-                address: s.addr,
-                lat: s.lat,
-                lng: s.lng,
-                category: s.cat,
-                description: s.desc,
-                historyAnecdote: s.hist
-            }))
-        }));
-
-        return results;
+      enriched.push(...(await enrichBatch(city, batch, offset)));
     } catch (error) {
-        console.error("Erreur Gemini:", error);
-        throw error;
+      console.error('Enrichissement du lot échoué :', error);
+      failures += batch.length;
+      enriched.push(...batch);
     }
+    onProgress?.(Math.min(offset + BATCH_SIZE, routes.length), routes.length);
+  }
+
+  return { routes: enriched, failures };
 };
 
-export const suggestPOIs = async (state: AppState): Promise<POI[]> => {
-    try {
-        const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: `Donne-moi 8 lieux d'intérêt réels et emblématiques à ${state.city} pour un parcours touristique.`,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                    type: Type.OBJECT,
-                    properties: {
-                        pois: {
-                            type: Type.ARRAY,
-                            items: {
-                                type: Type.OBJECT,
-                                properties: {
-                                    name: { type: Type.STRING },
-                                    address: { type: Type.STRING },
-                                    lat: { type: Type.NUMBER },
-                                    lng: { type: Type.NUMBER },
-                                    category: { type: Type.STRING },
-                                },
-                                required: ["name", "address", "lat", "lng"]
-                            }
-                        }
-                    }
-                },
-            },
-        });
-        const json = JSON.parse(response.text || "{}");
-        return (json.pois || []).map((p: any, i: number) => ({ ...p, id: `poi-${Date.now()}-${i}` }));
-    } catch (error) {
-        return [];
-    }
+// --------------------------------------------------------------------------
+// Complément d'inventaire
+// --------------------------------------------------------------------------
+
+const suggestionSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    pois: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          name: { type: Type.STRING },
+          theme: { type: Type.STRING, description: `Un de : ${POI_THEMES.join(' | ')}` },
+          subtype: { type: Type.STRING, description: 'Type de lieu en un ou deux mots' },
+          lat: { type: Type.NUMBER },
+          lng: { type: Type.NUMBER },
+          address: { type: Type.STRING },
+          visitMinutes: { type: Type.INTEGER },
+        },
+        required: ['name', 'theme', 'subtype', 'lat', 'lng'],
+      },
+    },
+  },
+  required: ['pois'],
+};
+
+/**
+ * Complète l'inventaire OSM avec les incontournables qui y manqueraient.
+ *
+ * Optionnel et volontairement limité : OpenStreetMap reste la référence, l'IA
+ * ne fait que boucher les trous. Les coordonnées renvoyées sont approximatives,
+ * les POI sont donc marqués comme d'origine IA dans l'interface.
+ */
+export const suggestMissingPOIs = async (
+  city: CityInfo,
+  existing: POI[],
+  limit = 10
+): Promise<POI[]> => {
+  const ai = getClient();
+  const known = existing
+    .slice(0, 60)
+    .map((p) => p.name)
+    .join(', ');
+
+  const response = await ai.models.generateContent({
+    model: SUGGEST_MODEL,
+    contents: `Ville : ${city.name} (${city.displayName}), centre approximatif ${city.lat.toFixed(4)}, ${city.lng.toFixed(4)}.
+
+Lieux touristiques déjà répertoriés : ${known || 'aucun'}.
+
+Cite au maximum ${limit} lieux touristiques réels et emblématiques de cette ville qui MANQUENT à cette liste. Donne des coordonnées GPS plausibles. N'invente aucun lieu : s'il n'en manque pas, renvoie une liste vide.`,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: suggestionSchema,
+      temperature: 0.3,
+    },
+  });
+
+  const parsed = JSON.parse(response.text || '{}');
+  const knownNames = new Set(existing.map((p) => p.name.toLowerCase()));
+
+  return (parsed.pois || [])
+    .filter((p: any) => p?.name && !knownNames.has(String(p.name).toLowerCase()))
+    .slice(0, limit)
+    .map(
+      (p: any, i: number): POI => ({
+        id: `ai-${Date.now()}-${i}`,
+        name: p.name,
+        theme: (POI_THEMES.includes(p.theme) ? p.theme : 'Patrimoine & Histoire') as PoiTheme,
+        subtype: p.subtype || 'Lieu remarquable',
+        lat: Number(p.lat),
+        lng: Number(p.lng),
+        address: p.address,
+        notoriety: 65,
+        visitMinutes: Number(p.visitMinutes) || 20,
+        source: 'ai',
+      })
+    )
+    .filter((p: POI) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
 };

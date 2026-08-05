@@ -1,321 +1,500 @@
-
-import React, { useState, useEffect } from 'react';
-import { INITIAL_STATE, AppState, GeneratedRoute, SavedPack } from './types';
-import { CriteriaBlock } from './components/CriteriaBlock';
-import { POIBlock } from './components/POIBlock';
-import { AdvancedOptions } from './components/AdvancedOptions';
-import { ResultsView } from './components/ResultsView';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  Calendar,
+  Library,
+  Loader2,
+  Map as MapIcon,
+  Package,
+  Trash2,
+  Wand2,
+} from 'lucide-react';
+import {
+  CityScan,
+  DEFAULT_ROUTE_CONFIG,
+  GeneratedRoute,
+  POI,
+  PoiFilters,
+  RouteConfig,
+  SavedPack,
+} from './types';
+import { CitySearch } from './components/CitySearch';
+import { PoiInventory } from './components/PoiInventory';
+import { RouteConfigPanel } from './components/RouteConfigPanel';
 import { RouteSelection } from './components/RouteSelection';
-import { generateRoute } from './services/geminiService';
-import { Wand2, AlertTriangle, Bookmark, Trash2, Map, ChevronRight, Search, Package, FileSpreadsheet, Settings2, History, FolderHeart, Calendar, ArrowRight, Library } from 'lucide-react';
+import { ResultsView } from './components/ResultsView';
+import { clearScanCache, dedupePois, scanCity } from './services/osmService';
+import { applyFilters, computeCapacity, planRoutes } from './services/routePlanner';
+import { enrichRoutes, hasApiKey, suggestMissingPOIs } from './services/geminiService';
+import { downloadPackJson } from './services/exporters';
+
+type View = 'city' | 'inventory' | 'config' | 'generating' | 'selection' | 'result';
+
+const INITIAL_FILTERS: PoiFilters = { themes: [], minNotoriety: 0, search: '' };
+
+const readStored = <T,>(key: string, fallback: T): T => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+};
 
 const App: React.FC = () => {
-  const [state, setState] = useState<AppState>(INITIAL_STATE);
-  const [view, setView] = useState<'input' | 'generating' | 'selection' | 'result'>('input');
-  
-  const [generatedRoutes, setGeneratedRoutes] = useState<GeneratedRoute[]>([]);
-  const [selectedRoute, setSelectedRoute] = useState<GeneratedRoute | null>(null);
-  
-  const [savedPacks, setSavedPacks] = useState<SavedPack[]>([]);
-  const [savedRoutes, setSavedRoutes] = useState<GeneratedRoute[]>([]);
+  const [view, setView] = useState<View>('city');
+  const [scan, setScan] = useState<CityScan | null>(null);
+  const [filters, setFilters] = useState<PoiFilters>(INITIAL_FILTERS);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [config, setConfig] = useState<RouteConfig>(DEFAULT_ROUTE_CONFIG);
+
+  const [routes, setRoutes] = useState<GeneratedRoute[]>([]);
+  const [activeRoute, setActiveRoute] = useState<GeneratedRoute | null>(null);
+  const [progress, setProgress] = useState('');
+
+  const [scanLoading, setScanLoading] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Charger l'historique au démarrage
+  const [packs, setPacks] = useState<SavedPack[]>(() =>
+    readStored<SavedPack[]>('nirmie_packs', [])
+  );
+  const [favorites, setFavorites] = useState<GeneratedRoute[]>(() =>
+    readStored<GeneratedRoute[]>('nirmie_favorites', [])
+  );
+
+  const aiAvailable = useMemo(() => hasApiKey(), []);
+
   useEffect(() => {
-    const storedPacks = localStorage.getItem('nirmie_saved_packs');
-    const storedRoutes = localStorage.getItem('nirmie_saved_routes');
-    if (storedPacks) {
-      try { setSavedPacks(JSON.parse(storedPacks)); } catch (e) { console.error(e); }
-    }
-    if (storedRoutes) {
-      try { setSavedRoutes(JSON.parse(storedRoutes)); } catch (e) { console.error(e); }
+    localStorage.setItem('nirmie_packs', JSON.stringify(packs));
+  }, [packs]);
+
+  useEffect(() => {
+    localStorage.setItem('nirmie_favorites', JSON.stringify(favorites));
+  }, [favorites]);
+
+  /** Les POI retenus, dans l'ordre de l'inventaire. */
+  const pool = useMemo(
+    () => (scan ? scan.pois.filter((p) => selectedIds.has(p.id)) : []),
+    [scan, selectedIds]
+  );
+
+  const capacity = useMemo(() => computeCapacity(pool, config), [pool, config]);
+
+  const recentCities = useMemo(
+    () => [...new Set(packs.map((p) => p.cityName))].slice(0, 8),
+    [packs]
+  );
+
+  // -----------------------------------------------------------------------
+  // Étape 1 : inventaire de la ville
+  // -----------------------------------------------------------------------
+
+  const handleScan = useCallback(async (cityName: string, force = false) => {
+    setScanLoading(true);
+    setError(null);
+    try {
+      if (force) clearScanCache(cityName);
+      const result = await scanCity(cityName, force);
+      setScan(result);
+      setFilters(INITIAL_FILTERS);
+      // Tout est retenu par défaut : c'est la capacité brute de la ville, à
+      // l'utilisateur d'élaguer s'il le souhaite.
+      setSelectedIds(new Set(result.pois.map((p) => p.id)));
+      setConfig((prev) => ({ ...prev, routeCount: null }));
+      setView('inventory');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Le relevé des lieux a échoué.');
+    } finally {
+      setScanLoading(false);
     }
   }, []);
 
-  // Sauvegarder l'historique dès qu'il change
-  useEffect(() => {
-    localStorage.setItem('nirmie_saved_packs', JSON.stringify(savedPacks));
-  }, [savedPacks]);
+  const handleCompleteWithAI = useCallback(async () => {
+    if (!scan) return;
+    setAiLoading(true);
+    setError(null);
+    try {
+      const extras = await suggestMissingPOIs(scan.city, scan.pois);
+      if (extras.length === 0) {
+        setError("L'IA n'a trouvé aucun lieu majeur manquant.");
+        return;
+      }
+      const merged = dedupePois([...scan.pois, ...extras]).sort(
+        (a, b) => b.notoriety - a.notoriety
+      );
+      const extraIds = new Set(extras.map((e) => e.id));
+      setScan({ ...scan, pois: merged });
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        // On ne coche que les nouveaux ayant survécu à la déduplication.
+        merged.filter((p) => extraIds.has(p.id)).forEach((p) => next.add(p.id));
+        return next;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Le complément IA a échoué.');
+    } finally {
+      setAiLoading(false);
+    }
+  }, [scan]);
 
-  useEffect(() => {
-    localStorage.setItem('nirmie_saved_routes', JSON.stringify(savedRoutes));
-  }, [savedRoutes]);
+  const handleAddPoi = useCallback((poi: POI) => {
+    setScan((prev) => (prev ? { ...prev, pois: [poi, ...prev.pois] } : prev));
+    setSelectedIds((prev) => new Set(prev).add(poi.id));
+  }, []);
 
-  const updateState = (updates: Partial<AppState>) => {
-    setState(prev => ({ ...prev, ...updates }));
-  };
+  const handleRemovePoi = useCallback((id: string) => {
+    setScan((prev) => (prev ? { ...prev, pois: prev.pois.filter((p) => p.id !== id) } : prev));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
 
-  const handleGenerate = async () => {
-    if (!state.city) {
-      alert("Veuillez indiquer une ville.");
+  // -----------------------------------------------------------------------
+  // Étape 3 : génération
+  // -----------------------------------------------------------------------
+
+  const handleGenerate = useCallback(async () => {
+    if (!scan) return;
+
+    setView('generating');
+    setError(null);
+    setProgress('Composition des parcours…');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    // Le planificateur est synchrone et peut occuper le thread une seconde :
+    // on laisse le navigateur peindre l'écran de chargement d'abord.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    let planned = planRoutes(pool, scan.city.name, config);
+
+    if (planned.length === 0) {
+      setError(
+        "Aucun parcours n'a pu être formé. Réduisez le minimum d'arrêts, augmentez la distance autorisée, ou retenez plus de lieux."
+      );
+      setView('config');
       return;
     }
 
-    if (state.isAdvancedMode) {
-      const totalDistributed = (Object.values(state.themeDistribution) as number[]).reduce((sum, val) => sum + val, 0);
-      if (totalDistributed > state.numberOfStops) {
-        setError(`Répartition invalide : vous avez distribué ${totalDistributed} points pour un maximum de ${state.numberOfStops} haltes.`);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        return;
-      }
+    // On accumule les remarques : une génération partiellement dégradée reste
+    // une génération réussie, mais l'utilisateur doit savoir ce qui manque.
+    const notices: string[] = [];
+
+    if (config.routeCount !== null && planned.length < config.routeCount) {
+      notices.push(
+        `${planned.length} parcours formés sur les ${config.routeCount} demandés : les lieux restants sont trop isolés pour tenir dans le budget de marche.`
+      );
     }
 
-    setError(null);
-    setView('generating');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-
-    try {
-      const routes = await generateRoute(state);
-      if (routes && routes.length > 0) {
-        setGeneratedRoutes(routes);
-        
-        // AUTO-ARCHIVAGE : On sauvegarde le pack immédiatement
-        const newPack: SavedPack = {
-          id: `pack-${Date.now()}`,
-          cityName: state.city,
-          createdAt: new Date().toISOString(),
-          routes: [...routes]
-        };
-        setSavedPacks(prev => [newPack, ...prev]);
-
-        if (routes.length === 1) {
-            setSelectedRoute(routes[0]);
-            setView('result');
-        } else {
-            setView('selection');
+    if (config.enrichWithAI && aiAvailable) {
+      setProgress(`Rédaction des textes (0/${planned.length})…`);
+      try {
+        const { routes: enriched, failures } = await enrichRoutes(
+          scan.city,
+          planned,
+          (done, total) => setProgress(`Rédaction des textes (${done}/${total})…`)
+        );
+        planned = enriched;
+        if (failures > 0) {
+          notices.push(
+            `${failures} parcours sur ${planned.length} n'ont pas pu être rédigés par l'IA : ils restent disponibles sans textes.`
+          );
         }
-      } else {
-        throw new Error("Aucun parcours généré.");
+      } catch (err) {
+        notices.push(
+          `Enrichissement IA indisponible (${
+            err instanceof Error ? err.message : 'erreur'
+          }). Les parcours sont générés sans textes.`
+        );
       }
-    } catch (err) {
-      setError("Erreur lors de la génération. Veuillez réessayer.");
-      setView('input');
     }
-  };
 
-  const handleSaveSingleRoute = (route: GeneratedRoute) => {
-    if (!savedRoutes.some(r => r.id === route.id)) {
-      setSavedRoutes(prev => [route, ...prev]);
-    }
-  };
+    setError(notices.length > 0 ? notices.join(' ') : null);
 
-  const handleOpenPack = (pack: SavedPack) => {
-    setGeneratedRoutes(pack.routes);
+    setRoutes(planned);
+    setPacks((prev) =>
+      [
+        {
+          id: `pack-${Date.now()}`,
+          cityName: scan.city.name,
+          createdAt: new Date().toISOString(),
+          routes: planned,
+          config,
+        },
+        ...prev,
+      ].slice(0, 20)
+    );
     setView('selection');
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  }, [scan, pool, config, aiAvailable]);
 
-  const handleOpenSingleRoute = (route: GeneratedRoute) => {
-    setSelectedRoute(route);
-    setGeneratedRoutes([route]); // Pour permettre le bouton retour
+  // -----------------------------------------------------------------------
+  // Archives
+  // -----------------------------------------------------------------------
+
+  const openRoute = (route: GeneratedRoute) => {
+    setActiveRoute(route);
     setView('result');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleDeletePack = (e: React.MouseEvent, packId: string) => {
-    e.stopPropagation();
-    if (confirm("Supprimer ce pack de l'historique ?")) {
-      setSavedPacks(prev => prev.filter(p => p.id !== packId));
-    }
+  const saveFavorite = (route: GeneratedRoute) => {
+    setFavorites((prev) => (prev.some((r) => r.id === route.id) ? prev : [route, ...prev]));
   };
 
-  const handleDeleteRoute = (e: React.MouseEvent, routeId: string) => {
-    e.stopPropagation();
-    if (confirm("Supprimer ce parcours ?")) {
-      setSavedRoutes(prev => prev.filter(r => r.id !== routeId));
-    }
+  const openPack = (pack: SavedPack) => {
+    setRoutes(pack.routes);
+    setConfig(pack.config);
+    setView('selection');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleSelectRoute = (route: GeneratedRoute) => {
-      setSelectedRoute(route);
-      setView('result');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+  const currentCity = scan?.city.name ?? routes[0]?.summary.city ?? '';
+
+  const resetToCity = () => {
+    setView('city');
+    setError(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const numToGen = state.isFullPackMode ? 
-    (state.citySize === 'Compacte' ? 11 : state.citySize === 'Standard' ? 16 : state.citySize === 'Métropole' ? 26 : 1) 
-    : (state.numberOfAlternatives || 1);
-
-  const isButtonDisabled = state.isAdvancedMode && (Object.values(state.themeDistribution) as number[]).reduce((sum, val) => sum + val, 0) > state.numberOfStops;
+  const steps: { key: View; label: string }[] = [
+    { key: 'city', label: 'Ville' },
+    { key: 'inventory', label: 'Lieux' },
+    { key: 'config', label: 'Réglages' },
+    { key: 'selection', label: 'Parcours' },
+  ];
+  const activeStep = view === 'generating' || view === 'result' ? 'selection' : view;
+  const stepIndex = Math.max(0, steps.findIndex((s) => s.key === activeStep));
 
   return (
     <div className="min-h-screen font-sans text-gray-800 pb-20">
-      
-      <header className="bg-white shadow-sm sticky top-0 z-50">
-        <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div>
-             <h1 className="text-2xl font-bold text-nirmie-600 tracking-tight flex items-center gap-2">
-               <span className="bg-nirmie-500 text-white rounded-lg p-1.5"><Wand2 className="w-5 h-5"/></span>
-               NirmieRoute
-             </h1>
-          </div>
-          {view !== 'input' && (
-            <button onClick={() => setView('input')} className="text-sm font-medium text-gray-500 hover:text-nirmie-600 transition-colors">Retour à l'accueil</button>
+      <header className="bg-white shadow-sm sticky top-0 z-[500] no-print">
+        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
+          <button onClick={resetToCity} className="flex items-center gap-2 flex-shrink-0">
+            <span className="bg-nirmie-500 text-white rounded-lg p-1.5">
+              <Wand2 className="w-5 h-5" />
+            </span>
+            <h1 className="text-2xl font-bold text-nirmie-600 tracking-tight">NirmieRoute</h1>
+          </button>
+
+          <nav className="hidden md:flex items-center gap-1">
+            {steps.map((step, i) => (
+              <React.Fragment key={step.key}>
+                {i > 0 && <span className="w-6 h-px bg-gray-200" />}
+                <span
+                  className={`px-3 py-1 rounded-full text-[11px] font-black uppercase tracking-wider transition-colors ${
+                    i === stepIndex
+                      ? 'bg-nirmie-500 text-white'
+                      : i < stepIndex
+                        ? 'text-nirmie-600'
+                        : 'text-gray-300'
+                  }`}
+                >
+                  {step.label}
+                </span>
+              </React.Fragment>
+            ))}
+          </nav>
+
+          {view !== 'city' && (
+            <button
+              onClick={resetToCity}
+              className="text-sm font-medium text-gray-500 hover:text-nirmie-600 transition-colors flex-shrink-0"
+            >
+              Nouvelle ville
+            </button>
           )}
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto px-6 py-8">
-        
-        {view === 'input' && (
-          <div className="space-y-12 animate-fade-in max-w-3xl mx-auto">
-            <section className="space-y-8">
-                <div className="text-center space-y-2 mb-8">
-                <h2 className="text-3xl font-extrabold text-gray-900">
-                    {state.isAdvancedMode ? 'Création Sur Mesure' : 'Générateur de Ville'}
-                </h2>
-                <p className="text-gray-500">
-                    {state.isAdvancedMode ? 'Affinez chaque paramètre de vos futurs parcours.' : 'Préparez le pack complet pour votre ville.'}
-                </p>
-                </div>
-
-                {error && (
-                <div className="bg-red-50 text-red-600 p-4 rounded-xl flex items-start gap-3 border border-red-100 shadow-sm animate-fade-in mb-6">
-                    <AlertTriangle className="w-5 h-5 mt-0.5 flex-shrink-0" /> 
-                    <p className="text-sm font-medium">{error}</p>
-                </div>
-                )}
-                
-                <CriteriaBlock state={state} onChange={updateState} />
-                <POIBlock state={state} onChange={updateState} />
-                <AdvancedOptions state={state} onChange={updateState} />
-
-                <div className="pt-4">
-                <button 
-                    onClick={handleGenerate}
-                    disabled={isButtonDisabled}
-                    className={`w-full text-white text-xl font-bold py-5 rounded-full shadow-lg transition-all flex items-center justify-center gap-3 ${isButtonDisabled ? 'bg-gray-300 cursor-not-allowed opacity-70 shadow-none' : 'bg-nirmie-500 hover:bg-nirmie-600 active:scale-95'}`}
-                >
-                    {state.isAdvancedMode ? <Settings2 className="w-6 h-6" /> : state.isFullPackMode ? <Package className="w-6 h-6" /> : <Wand2 className="w-6 h-6" />}
-                    {isButtonDisabled ? 'Répartition invalide' : `Générer ${numToGen} parcours ${state.isAdvancedMode ? 'sur mesure' : ''}`}
-                </button>
-                </div>
-            </section>
-
-            {/* SECTION HISTORIQUE EN BAS DE PAGE */}
-            {(savedPacks.length > 0 || savedRoutes.length > 0) && (
-                <section className="pt-12 border-t border-gray-200 animate-fade-in">
-                    <div className="flex items-center justify-between mb-8">
-                      <div className="space-y-1">
-                        <h3 className="text-2xl font-black text-gray-800 flex items-center gap-2">
-                            <Library className="w-7 h-7 text-nirmie-600" /> Mes Archives
-                        </h3>
-                        <p className="text-sm text-gray-400">Toutes vos générations sont automatiquement archivées ici.</p>
-                      </div>
-                    </div>
-                    
-                    {/* Packs Complets */}
-                    {savedPacks.length > 0 && (
-                        <div className="mb-10">
-                            <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
-                                <Package className="w-3 h-3" /> Packs de Ville ({savedPacks.length})
-                            </h4>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                {savedPacks.map(pack => (
-                                    <div 
-                                      key={pack.id} 
-                                      onClick={() => handleOpenPack(pack)} 
-                                      className="bg-white p-5 rounded-3xl border border-gray-100 hover:border-nirmie-300 hover:shadow-md transition-all cursor-pointer group relative overflow-hidden"
-                                    >
-                                        <div className="flex justify-between items-start relative z-10">
-                                            <div>
-                                                <div className="flex items-center gap-2 mb-1">
-                                                  <Map className="w-4 h-4 text-nirmie-500" />
-                                                  <h4 className="font-bold text-gray-800 text-lg">{pack.cityName}</h4>
-                                                </div>
-                                                <p className="text-[10px] font-black text-nirmie-600 uppercase tracking-tighter">
-                                                    {pack.routes.length} Parcours • {pack.routes.reduce((acc, r) => acc + r.steps.length, 0)} POIs
-                                                </p>
-                                            </div>
-                                            <button 
-                                              onClick={(e) => handleDeletePack(e, pack.id)}
-                                              className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
-                                            >
-                                              <Trash2 className="w-4 h-4" />
-                                            </button>
-                                        </div>
-                                        <div className="mt-4 flex items-center justify-between relative z-10">
-                                            <p className="text-[10px] text-gray-400 flex items-center gap-1">
-                                                <Calendar className="w-3 h-3" /> {new Date(pack.createdAt).toLocaleDateString()}
-                                            </p>
-                                            <div className="text-nirmie-500 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 text-xs font-bold">
-                                              Charger <ArrowRight className="w-3 h-3" />
-                                            </div>
-                                        </div>
-                                        <div className="absolute top-0 right-0 w-24 h-24 bg-nirmie-50/50 rounded-bl-full -mr-10 -mt-10 group-hover:bg-nirmie-100 transition-colors" />
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Parcours Individuels */}
-                    {savedRoutes.length > 0 && (
-                        <div>
-                            <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
-                                <Bookmark className="w-3 h-3" /> Parcours Favoris ({savedRoutes.length})
-                            </h4>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                {savedRoutes.map(route => (
-                                    <div 
-                                      key={route.id} 
-                                      onClick={() => handleOpenSingleRoute(route)} 
-                                      className="bg-white px-4 py-3 rounded-2xl border border-gray-100 hover:border-amber-300 transition-all cursor-pointer flex justify-between items-center group shadow-sm"
-                                    >
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center text-amber-500">
-                                                <Bookmark className="w-4 h-4" />
-                                            </div>
-                                            <div className="min-w-0">
-                                                <h5 className="font-bold text-gray-800 text-sm truncate">{route.summary.title}</h5>
-                                                <p className="text-[10px] text-gray-400 truncate">{route.summary.city} • {route.summary.theme}</p>
-                                            </div>
-                                        </div>
-                                        <button 
-                                            onClick={(e) => handleDeleteRoute(e, route.id)}
-                                            className="p-1.5 text-gray-300 hover:text-red-500 rounded-lg"
-                                        >
-                                            <Trash2 className="w-3.5 h-3.5" />
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-                </section>
-            )}
+      <main className="max-w-6xl mx-auto px-6 py-8">
+        {error && view !== 'city' && (
+          <div className="bg-amber-50 text-amber-800 p-4 rounded-2xl flex items-start gap-3 border border-amber-100 mb-6 animate-fade-in">
+            <AlertTriangle className="w-5 h-5 mt-0.5 flex-shrink-0" />
+            <p className="text-sm font-medium leading-relaxed flex-1">{error}</p>
+            <button
+              onClick={() => setError(null)}
+              className="text-xs font-bold text-amber-600 hover:text-amber-800 flex-shrink-0"
+            >
+              Fermer
+            </button>
           </div>
+        )}
+
+        {view === 'city' && (
+          <>
+            <CitySearch
+              onScan={(city) => handleScan(city)}
+              loading={scanLoading}
+              error={error}
+              recent={recentCities}
+            />
+
+            {(packs.length > 0 || favorites.length > 0) && (
+              <section className="mt-16 pt-10 border-t border-gray-200 max-w-4xl mx-auto">
+                <h3 className="text-xl font-black text-gray-800 flex items-center gap-2 mb-6">
+                  <Library className="w-6 h-6 text-nirmie-600" /> Mes archives
+                </h3>
+
+                {packs.length > 0 && (
+                  <div className="mb-8">
+                    <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+                      <Package className="w-3 h-3" /> Packs de ville ({packs.length})
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {packs.map((pack) => (
+                        <div
+                          key={pack.id}
+                          onClick={() => openPack(pack)}
+                          className="bg-white p-4 rounded-2xl border border-gray-100 hover:border-nirmie-300 hover:shadow-sm transition-all cursor-pointer flex items-start justify-between gap-3"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <MapIcon className="w-4 h-4 text-nirmie-500 flex-shrink-0" />
+                              <h5 className="font-bold text-gray-800 truncate">{pack.cityName}</h5>
+                            </div>
+                            <p className="text-[10px] font-black text-nirmie-600 uppercase tracking-tight">
+                              {pack.routes.length} parcours •{' '}
+                              {pack.routes.reduce((n, r) => n + r.steps.length, 0)} arrêts
+                            </p>
+                            <p className="text-[10px] text-gray-400 flex items-center gap-1 mt-2">
+                              <Calendar className="w-3 h-3" />
+                              {new Date(pack.createdAt).toLocaleDateString('fr-FR')}
+                            </p>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPacks((prev) => prev.filter((p) => p.id !== pack.id));
+                            }}
+                            className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors flex-shrink-0"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {favorites.length > 0 && (
+                  <div>
+                    <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">
+                      Parcours favoris ({favorites.length})
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {favorites.map((route) => (
+                        <div
+                          key={route.id}
+                          onClick={() => openRoute(route)}
+                          className="bg-white px-4 py-3 rounded-xl border border-gray-100 hover:border-amber-300 transition-all cursor-pointer flex items-center justify-between gap-3"
+                        >
+                          <div className="min-w-0">
+                            <h5 className="font-bold text-gray-800 text-sm truncate">
+                              {route.summary.title}
+                            </h5>
+                            <p className="text-[10px] text-gray-400 truncate">
+                              {route.summary.city} • {route.summary.stopsCount} arrêts •{' '}
+                              {route.summary.totalDistanceKm} km
+                            </p>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setFavorites((prev) => prev.filter((r) => r.id !== route.id));
+                            }}
+                            className="p-1.5 text-gray-300 hover:text-red-500 rounded-lg flex-shrink-0"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
+          </>
+        )}
+
+        {view === 'inventory' && scan && (
+          <PoiInventory
+            scan={scan}
+            filters={filters}
+            onFiltersChange={setFilters}
+            selectedIds={selectedIds}
+            onSelectionChange={setSelectedIds}
+            onAddPoi={handleAddPoi}
+            onRemovePoi={handleRemovePoi}
+            onRescan={() => handleScan(scan.city.name, true)}
+            onCompleteWithAI={handleCompleteWithAI}
+            aiLoading={aiLoading}
+            aiAvailable={aiAvailable}
+            onContinue={() => {
+              // Ce que l'utilisateur voit à l'écran est ce qui part en
+              // génération : on écarte les POI retenus mais masqués par un filtre.
+              const visibleIds = new Set(applyFilters(scan.pois, filters).map((p) => p.id));
+              setSelectedIds(new Set([...selectedIds].filter((id) => visibleIds.has(id))));
+              setView('config');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+          />
+        )}
+
+        {view === 'config' && scan && (
+          <RouteConfigPanel
+            pool={pool}
+            config={config}
+            capacity={capacity}
+            onChange={(updates) => setConfig((prev) => ({ ...prev, ...updates }))}
+            onBack={() => setView('inventory')}
+            onGenerate={handleGenerate}
+            aiAvailable={aiAvailable}
+          />
         )}
 
         {view === 'generating' && (
           <div className="flex flex-col items-center justify-center py-32 space-y-8">
             <div className="relative">
-              <div className="w-24 h-24 bg-nirmie-100 rounded-full animate-ping absolute inset-0"></div>
+              <div className="w-24 h-24 bg-nirmie-100 rounded-full animate-ping absolute inset-0" />
               <div className="w-24 h-24 bg-nirmie-500 rounded-full flex items-center justify-center relative shadow-xl z-10">
-                <Wand2 className="w-10 h-10 text-white animate-spin-slow" />
+                <Loader2 className="w-10 h-10 text-white animate-spin" />
               </div>
             </div>
-            <div className="text-center space-y-4">
-              <h3 className="text-2xl font-bold text-gray-800">Production en cours...</h3>
-              <p className="text-sm text-gray-500 italic">"L'IA prépare {numToGen} parcours exclusifs avec des descriptions détaillées..."</p>
+            <div className="text-center space-y-2">
+              <h3 className="text-2xl font-bold text-gray-800">Génération en cours</h3>
+              <p className="text-sm text-gray-500">{progress}</p>
             </div>
           </div>
         )}
 
         {view === 'selection' && (
-          <RouteSelection 
-            routes={generatedRoutes} 
-            onSelect={handleSelectRoute} 
-            onBack={() => setView('input')} 
+          <RouteSelection
+            routes={routes}
+            city={currentCity}
+            onSelect={openRoute}
+            onBack={() => setView(scan ? 'config' : 'city')}
+            onExportAll={() =>
+              downloadPackJson({
+                id: `pack-${Date.now()}`,
+                cityName: currentCity,
+                createdAt: new Date().toISOString(),
+                routes,
+                config,
+              })
+            }
           />
         )}
 
-        {view === 'result' && selectedRoute && (
-          <ResultsView 
-            route={selectedRoute} 
-            onBack={() => setView(generatedRoutes.length > 1 ? 'selection' : 'input')} 
-            onSave={handleSaveSingleRoute}
-            isSaved={savedRoutes.some(r => r.id === selectedRoute.id)}
+        {view === 'result' && activeRoute && (
+          <ResultsView
+            route={activeRoute}
+            onBack={() => setView(routes.length > 0 ? 'selection' : 'city')}
+            onSave={saveFavorite}
+            isSaved={favorites.some((r) => r.id === activeRoute.id)}
           />
         )}
       </main>
