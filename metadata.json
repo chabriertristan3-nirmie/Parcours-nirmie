@@ -1,0 +1,7 @@
+{
+  "name": "NirmieRoute",
+  "description": "Générateur de parcours ludique et personnalisé assisté par IA.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
