@@ -1,5 +1,17 @@
-import React from 'react';
-import { ArrowLeft, ChevronRight, Clock, Download, Footprints, MapPin, Repeat } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  ArrowLeft,
+  Bike,
+  CheckCircle2,
+  ChevronRight,
+  Clock,
+  Database,
+  Download,
+  Footprints,
+  Loader2,
+  MapPin,
+  Repeat,
+} from 'lucide-react';
 import { GeneratedRoute, THEME_COLORS, PoiTheme } from '../types';
 import { formatDuration } from '../services/geo';
 
@@ -9,6 +21,8 @@ interface Props {
   onSelect: (route: GeneratedRoute) => void;
   onBack: () => void;
   onExportAll: () => void;
+  /** `null` quand Supabase n'est pas configuré : le bouton n'apparaît pas. */
+  onSupabaseExport: (() => Promise<{ routes: number; steps: number }>) | null;
 }
 
 export const RouteSelection: React.FC<Props> = ({
@@ -17,10 +31,32 @@ export const RouteSelection: React.FC<Props> = ({
   onSelect,
   onBack,
   onExportAll,
+  onSupabaseExport,
 }) => {
   const totalStops = routes.reduce((sum, r) => sum + r.steps.length, 0);
   const uniqueStops = new Set(routes.flatMap((r) => r.steps.map((s) => s.id))).size;
   const totalKm = routes.reduce((sum, r) => sum + r.summary.totalDistanceKm, 0);
+
+  const [supabaseState, setSupabaseState] = useState<
+    { status: 'idle' } | { status: 'loading' } | { status: 'done'; detail: string } | { status: 'error'; detail: string }
+  >({ status: 'idle' });
+
+  const pushToSupabase = async () => {
+    if (!onSupabaseExport) return;
+    setSupabaseState({ status: 'loading' });
+    try {
+      const { routes: n, steps } = await onSupabaseExport();
+      setSupabaseState({
+        status: 'done',
+        detail: `${n} parcours et ${steps} étapes envoyés dans Supabase.`,
+      });
+    } catch (err) {
+      setSupabaseState({
+        status: 'error',
+        detail: err instanceof Error ? err.message : "L'export Supabase a échoué.",
+      });
+    }
+  };
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -31,13 +67,47 @@ export const RouteSelection: React.FC<Props> = ({
         >
           <ArrowLeft className="w-4 h-4" /> Modifier les réglages
         </button>
-        <button
-          onClick={onExportAll}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white border border-gray-200 text-sm font-bold text-gray-600 hover:border-nirmie-400 hover:text-nirmie-700 transition-colors"
-        >
-          <Download className="w-4 h-4" /> Exporter le pack (JSON)
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={onExportAll}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white border border-gray-200 text-sm font-bold text-gray-600 hover:border-nirmie-400 hover:text-nirmie-700 transition-colors"
+          >
+            <Download className="w-4 h-4" /> Exporter le pack (JSON)
+          </button>
+          {onSupabaseExport && (
+            <button
+              onClick={pushToSupabase}
+              disabled={supabaseState.status === 'loading' || supabaseState.status === 'done'}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-colors ${
+                supabaseState.status === 'done'
+                  ? 'bg-nirmie-50 border border-nirmie-200 text-nirmie-700 cursor-default'
+                  : 'bg-emerald-600 text-white hover:bg-emerald-700'
+              }`}
+            >
+              {supabaseState.status === 'loading' ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : supabaseState.status === 'done' ? (
+                <CheckCircle2 className="w-4 h-4" />
+              ) : (
+                <Database className="w-4 h-4" />
+              )}
+              {supabaseState.status === 'done' ? 'Envoyé dans Supabase' : 'Envoyer vers Supabase'}
+            </button>
+          )}
+        </div>
       </div>
+
+      {(supabaseState.status === 'done' || supabaseState.status === 'error') && (
+        <p
+          className={`text-xs font-medium p-3 rounded-xl border ${
+            supabaseState.status === 'done'
+              ? 'bg-nirmie-50 border-nirmie-100 text-nirmie-800'
+              : 'bg-red-50 border-red-100 text-red-700'
+          }`}
+        >
+          {supabaseState.detail}
+        </p>
+      )}
 
       <div className="bg-white rounded-3xl border border-nirmie-100 shadow-sm p-6">
         <p className="text-xs font-black text-nirmie-600 uppercase tracking-widest mb-1">
@@ -90,7 +160,11 @@ export const RouteSelection: React.FC<Props> = ({
                 {route.summary.stopsCount} arrêts
               </span>
               <span className="flex items-center gap-1">
-                <Footprints className="w-3 h-3 text-nirmie-500" />
+                {route.summary.travelMode === 'bike' ? (
+                  <Bike className="w-3 h-3 text-nirmie-500" />
+                ) : (
+                  <Footprints className="w-3 h-3 text-nirmie-500" />
+                )}
                 {route.summary.totalDistanceKm} km
               </span>
               <span className="flex items-center gap-1">

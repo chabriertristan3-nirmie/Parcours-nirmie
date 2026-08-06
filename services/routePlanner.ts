@@ -204,6 +204,7 @@ export const buildRoute = (
       title: titleFor(ordered, city, config.themeMode),
       city,
       theme: dominantTheme(ordered),
+      travelMode: config.travelMode,
       totalDistanceKm: Math.round((totalM / 1000) * 10) / 10,
       walkingMinutes: Math.round(walkingMinutes),
       visitMinutes,

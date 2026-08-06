@@ -9,7 +9,7 @@
  * on reste raisonnable (un scan par ville, mis en cache côté navigateur).
  */
 
-import { CityInfo, CityScan, POI, PoiTheme } from '../types';
+import { CityInfo, CityScan, CycleRoute, POI, PoiTheme } from '../types';
 import { bboxRadiusKm } from './geo';
 
 const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
@@ -67,6 +67,61 @@ export const geocodeCity = async (query: string): Promise<CityInfo> => {
 };
 
 // --------------------------------------------------------------------------
+// Règles de sécurité
+// --------------------------------------------------------------------------
+
+/**
+ * Un POI proposé au public doit être librement accessible et sans danger.
+ *
+ * Retourne la raison de l'exclusion, ou `null` si le lieu est admissible.
+ * Ces règles sont volontairement strictes : dans le doute, on écarte —
+ * un inventaire un peu plus court vaut mieux qu'un visiteur envoyé dans une
+ * propriété privée ou un site à risque.
+ */
+export const safetyExclusion = (tags: OsmTags): string | null => {
+  // Accès restreint : propriété privée, clientèle uniquement, sur autorisation.
+  const access = tags.access || tags['foot'];
+  if (access && ['private', 'no', 'permit', 'customers', 'military'].includes(access)) {
+    return 'accès privé ou restreint';
+  }
+  if (tags.ownership === 'private' && !tags.tourism) {
+    return 'propriété privée';
+  }
+
+  // Zones militaires, quelles qu'elles soient.
+  if (tags.military || tags.landuse === 'military') {
+    return 'zone militaire';
+  }
+
+  // Sites dangereux ou signalés comme tels.
+  if (tags.hazard) return 'site signalé dangereux';
+  if (tags.natural === 'cave_entrance') return 'entrée de grotte (risque de chute)';
+  if (tags.natural === 'peak' || tags.natural === 'cliff') {
+    return 'sommet ou falaise (terrain accidenté)';
+  }
+  if (tags.natural === 'sinkhole') return 'cavité naturelle';
+  if (tags['seamark:type']) return 'site en mer';
+
+  // Lieux à l'abandon ou en chantier : structure instable, accès interdit.
+  if (tags.abandoned === 'yes' || tags['abandoned:tourism'] || tags['abandoned:building']) {
+    return "site à l'abandon";
+  }
+  if (tags.construction || tags.building === 'construction') return 'site en travaux';
+  if (tags['disused:tourism'] || tags.disused === 'yes') return 'site désaffecté';
+
+  // Infrastructures actives où le public n'a rien à faire à pied.
+  if (tags.railway === 'level_crossing' || tags.railway === 'crossing') {
+    return 'passage à niveau';
+  }
+  if (tags.man_made === 'water_tower' || tags.man_made === 'chimney') {
+    return 'infrastructure industrielle';
+  }
+  if (tags.power) return 'installation électrique';
+
+  return null;
+};
+
+// --------------------------------------------------------------------------
 // Classification des tags OSM
 // --------------------------------------------------------------------------
 
@@ -88,8 +143,6 @@ const classify = (tags: OsmTags): Classification | null => {
   // --- Panoramas -----------------------------------------------------------
   if (tourism === 'viewpoint')
     return { theme: 'Panoramas & Points de vue', subtype: 'Point de vue', visitMinutes: 10, baseScore: 30 };
-  if (natural === 'peak')
-    return { theme: 'Panoramas & Points de vue', subtype: 'Sommet', visitMinutes: 15, baseScore: 25 };
   if (man_made === 'tower' && tags['tower:type'] === 'observation')
     return { theme: 'Panoramas & Points de vue', subtype: 'Tour panoramique', visitMinutes: 25, baseScore: 40 };
   if (man_made === 'lighthouse')
@@ -147,7 +200,7 @@ const classify = (tags: OsmTags): Classification | null => {
     return { theme: 'Nature & Jardins', subtype: 'Réserve naturelle', visitMinutes: 45, baseScore: 40 };
   if (natural === 'beach')
     return { theme: 'Nature & Jardins', subtype: 'Plage', visitMinutes: 40, baseScore: 40 };
-  if (natural === 'spring' || natural === 'cave_entrance' || natural === 'waterfall')
+  if (natural === 'spring' || natural === 'waterfall')
     return { theme: 'Nature & Jardins', subtype: 'Curiosité naturelle', visitMinutes: 20, baseScore: 35 };
 
   // --- Vie locale ----------------------------------------------------------
@@ -215,7 +268,7 @@ const buildOverpassQuery = (city: CityInfo): string => {
     '["tourism"~"^(museum|attraction|artwork|gallery|viewpoint|zoo|aquarium|theme_park)$"]',
     '["historic"~"^(castle|monument|memorial|ruins|archaeological_site|city_gate|city_walls|fort|building|manor|house|tower|church|monastery|aqueduct|bridge)$"]',
     '["leisure"~"^(park|garden|nature_reserve)$"]',
-    '["natural"~"^(peak|beach|spring|cave_entrance|waterfall)$"]',
+    '["natural"~"^(beach|spring|waterfall)$"]',
     '["amenity"~"^(theatre|arts_centre|marketplace|townhall)$"]',
     '["man_made"~"^(tower|lighthouse|windmill|watermill)$"]',
     '["building"~"^(castle|cathedral|basilica)$"]',
@@ -308,7 +361,11 @@ export const dedupePois = (pois: POI[]): POI[] => {
   return [...kept.values()];
 };
 
-const elementToPoi = (element: OverpassElement): POI | null => {
+/**
+ * Convertit un élément Overpass en POI.
+ * `onExcluded` est appelé quand un lieu classable est écarté par la sécurité.
+ */
+const elementToPoi = (element: OverpassElement, onExcluded?: () => void): POI | null => {
   const tags = element.tags || {};
   const name = tags.name;
   if (!name) return null;
@@ -319,6 +376,13 @@ const elementToPoi = (element: OverpassElement): POI | null => {
 
   const classification = classify(tags);
   if (!classification) return null;
+
+  // La sécurité passe après la classification : on ne compte comme « écartés »
+  // que des lieux qui auraient réellement figuré dans l'inventaire.
+  if (safetyExclusion(tags) !== null) {
+    onExcluded?.();
+    return null;
+  }
 
   return {
     id: `osm-${element.type}-${element.id}`,
@@ -338,6 +402,48 @@ const elementToPoi = (element: OverpassElement): POI | null => {
 };
 
 // --------------------------------------------------------------------------
+// Itinéraires cyclables officiels
+// --------------------------------------------------------------------------
+
+const buildCycleRoutesQuery = (city: CityInfo): string => {
+  const useArea = city.osmType === 'relation' && typeof city.osmId === 'number';
+  const scope = useArea ? `area(${3600000000 + (city.osmId as number)})->.searchArea;` : '';
+  const filter = useArea
+    ? '(area.searchArea)'
+    : `(around:${Math.round(bboxRadiusKm(city.bbox) * 1000)},${city.lat},${city.lng})`;
+
+  return `[out:json][timeout:60];
+${scope}
+relation["route"="bicycle"]["name"]${filter};
+out tags 80;`;
+};
+
+const parseCycleRoutes = (elements: OverpassElement[]): CycleRoute[] => {
+  const seen = new Set<string>();
+  const routes: CycleRoute[] = [];
+
+  for (const el of elements) {
+    const tags = el.tags || {};
+    if (!tags.name || seen.has(tags.name)) continue;
+    seen.add(tags.name);
+
+    const distance = tags.distance ? parseFloat(tags.distance.replace(',', '.')) : NaN;
+    routes.push({
+      id: `cycle-${el.id}`,
+      name: tags.name,
+      network: tags.network,
+      ref: tags.ref,
+      distanceKm: Number.isFinite(distance) ? Math.round(distance) : undefined,
+    });
+  }
+
+  // Les grands itinéraires (nationaux, régionaux) d'abord.
+  const rank = (r: CycleRoute) =>
+    r.network === 'ncn' ? 0 : r.network === 'rcn' ? 1 : r.network === 'lcn' ? 2 : 3;
+  return routes.sort((a, b) => rank(a) - rank(b)).slice(0, 20);
+};
+
+// --------------------------------------------------------------------------
 // Cache navigateur
 // --------------------------------------------------------------------------
 
@@ -349,6 +455,11 @@ const readCache = (city: string): CityScan | null => {
     if (!raw) return null;
     const scan = JSON.parse(raw) as CityScan;
     if (Date.now() - new Date(scan.scannedAt).getTime() > CACHE_TTL_MS) return null;
+    // Les scans antérieurs à l'arrivée du vélo et des règles de sécurité
+    // n'ont pas ces champs : on les invalide pour forcer un scan à jour.
+    if (!Array.isArray(scan.cycleRoutes) || typeof scan.excludedCount !== 'number') {
+      return null;
+    }
     return scan;
   } catch {
     return null;
@@ -395,15 +506,34 @@ export const scanCity = async (query: string, force = false): Promise<CityScan> 
   }
 
   const elements = await runOverpass(buildOverpassQuery(city));
+
+  let excludedCount = 0;
   const pois = dedupePois(
-    elements.map(elementToPoi).filter((p): p is POI => p !== null)
+    elements
+      .map((el) => elementToPoi(el, () => excludedCount++))
+      .filter((p): p is POI => p !== null)
   ).sort((a, b) => b.notoriety - a.notoriety);
 
   if (pois.length === 0) {
     notes.push("Aucun lieu touristique cartographié pour cette ville sur OpenStreetMap.");
   }
 
-  const scan: CityScan = { city, pois, scannedAt: new Date().toISOString(), notes };
+  // Les itinéraires cyclables sont un bonus : leur échec ne bloque pas le scan.
+  let cycleRoutes: CycleRoute[] = [];
+  try {
+    cycleRoutes = parseCycleRoutes(await runOverpass(buildCycleRoutesQuery(city)));
+  } catch {
+    notes.push("Les itinéraires cyclables officiels n'ont pas pu être relevés.");
+  }
+
+  const scan: CityScan = {
+    city,
+    pois,
+    cycleRoutes,
+    scannedAt: new Date().toISOString(),
+    notes,
+    excludedCount,
+  };
   writeCache(scan);
   return scan;
 };

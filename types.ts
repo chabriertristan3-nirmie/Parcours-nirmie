@@ -30,6 +30,8 @@ export const THEME_COLORS: Record<PoiTheme, string> = {
 
 export type PoiSource = 'osm' | 'ai' | 'manual';
 
+export type TravelMode = 'walk' | 'bike';
+
 export interface POI {
   id: string;
   name: string;
@@ -65,12 +67,26 @@ export interface CityInfo {
   osmId?: number;
 }
 
+/** Itinéraire cyclable officiel (relation OSM route=bicycle) traversant la ville. */
+export interface CycleRoute {
+  id: string;
+  name: string;
+  /** lcn = local, rcn = régional, ncn = national (ex. ViaRhôna). */
+  network?: string;
+  ref?: string;
+  distanceKm?: number;
+}
+
 export interface CityScan {
   city: CityInfo;
   pois: POI[];
+  /** Itinéraires cyclables balisés relevés dans la commune. */
+  cycleRoutes: CycleRoute[];
   scannedAt: string;
   /** Avertissements non bloquants remontés pendant le scan. */
   notes: string[];
+  /** Lieux écartés par les règles de sécurité, pour information. */
+  excludedCount: number;
 }
 
 /** Filtres appliqués à l'inventaire avant planification. */
@@ -83,6 +99,8 @@ export interface PoiFilters {
 export type ThemeMode = 'mixed' | 'thematic';
 
 export interface RouteConfig {
+  /** À pied ou à vélo — change les vitesses et les distances raisonnables. */
+  travelMode: TravelMode;
   /** Bornes du nombre d'arrêts par parcours. */
   stopsMin: number;
   stopsTarget: number;
@@ -104,6 +122,7 @@ export interface RouteConfig {
 }
 
 export const DEFAULT_ROUTE_CONFIG: RouteConfig = {
+  travelMode: 'walk',
   stopsMin: 4,
   stopsTarget: 6,
   stopsMax: 9,
@@ -116,6 +135,57 @@ export const DEFAULT_ROUTE_CONFIG: RouteConfig = {
   enrichWithAI: true,
 };
 
+/** Réglages raisonnables propres à chaque mode de déplacement. */
+export const MODE_PRESETS: Record<
+  TravelMode,
+  {
+    label: string;
+    defaultDistanceKm: number;
+    distanceMinKm: number;
+    distanceMaxKm: number;
+    paces: { value: number; label: string }[];
+    defaultPaceKmh: number;
+  }
+> = {
+  walk: {
+    label: 'À pied',
+    defaultDistanceKm: 4,
+    distanceMinKm: 1,
+    distanceMaxKm: 15,
+    paces: [
+      { value: 3.4, label: 'Flânerie' },
+      { value: 4.2, label: 'Normal' },
+      { value: 5, label: 'Soutenu' },
+    ],
+    defaultPaceKmh: 4.2,
+  },
+  bike: {
+    label: 'À vélo',
+    defaultDistanceKm: 20,
+    distanceMinKm: 5,
+    distanceMaxKm: 60,
+    paces: [
+      { value: 12, label: 'Tranquille' },
+      { value: 15, label: 'Normal' },
+      { value: 18, label: 'Sportif' },
+    ],
+    defaultPaceKmh: 15,
+  },
+};
+
+/** Préconisation renvoyée par l'IA sur l'écran de réglages. */
+export interface AiRecommendation {
+  routeCount: number;
+  stopsMin: number;
+  stopsTarget: number;
+  stopsMax: number;
+  maxDistanceKm: number;
+  themeMode: ThemeMode;
+  loop: boolean;
+  /** Justification en français, affichée telle quelle. */
+  rationale: string;
+}
+
 export interface RouteStep extends POI {
   stepNumber: number;
   /** Distance de marche estimée depuis l'étape précédente, en mètres. */
@@ -126,6 +196,8 @@ export interface RouteSummary {
   title: string;
   city: string;
   theme: string;
+  /** Absent sur les parcours sauvegardés avant l'arrivée du mode vélo. */
+  travelMode?: TravelMode;
   totalDistanceKm: number;
   walkingMinutes: number;
   visitMinutes: number;

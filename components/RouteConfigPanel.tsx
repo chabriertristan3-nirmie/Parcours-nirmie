@@ -1,21 +1,33 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   ArrowLeft,
+  Bike,
   Footprints,
   Gauge,
   Infinity as InfinityIcon,
   Layers,
   ListOrdered,
+  Loader2,
   Repeat,
   Ruler,
   Shuffle,
   Sparkles,
   Wand2,
+  X,
 } from 'lucide-react';
-import { Capacity, POI, RouteConfig } from '../types';
+import {
+  AiRecommendation,
+  Capacity,
+  CityScan,
+  MODE_PRESETS,
+  POI,
+  RouteConfig,
+  TravelMode,
+} from '../types';
 import { formatDuration } from '../services/geo';
 
 interface Props {
+  scan: CityScan;
   pool: POI[];
   config: RouteConfig;
   capacity: Capacity;
@@ -23,6 +35,7 @@ interface Props {
   onBack: () => void;
   onGenerate: () => void;
   aiAvailable: boolean;
+  onRecommend: () => Promise<AiRecommendation | null>;
 }
 
 const Section: React.FC<{
@@ -84,6 +97,7 @@ const Toggle: React.FC<{
 );
 
 export const RouteConfigPanel: React.FC<Props> = ({
+  scan,
   pool,
   config,
   capacity,
@@ -91,7 +105,12 @@ export const RouteConfigPanel: React.FC<Props> = ({
   onBack,
   onGenerate,
   aiAvailable,
+  onRecommend,
 }) => {
+  const [recommendation, setRecommendation] = useState<AiRecommendation | null>(null);
+  const [recommendLoading, setRecommendLoading] = useState(false);
+
+  const preset = MODE_PRESETS[config.travelMode];
   const routeCount = config.routeCount ?? capacity.maxRoutes;
   const impossible = capacity.maxRoutes === 0;
 
@@ -101,7 +120,19 @@ export const RouteConfigPanel: React.FC<Props> = ({
     pool.reduce((sum, p) => sum + p.visitMinutes, 0) / Math.max(1, pool.length);
   const estimatedMinutes =
     config.stopsTarget * avgVisit +
-    ((config.maxDistanceKm ?? 4) * 0.75 / config.paceKmh) * 60;
+    (((config.maxDistanceKm ?? preset.defaultDistanceKm) * 0.75) / config.paceKmh) * 60;
+
+  const switchMode = (mode: TravelMode) => {
+    if (mode === config.travelMode) return;
+    const next = MODE_PRESETS[mode];
+    setRecommendation(null);
+    onChange({
+      travelMode: mode,
+      maxDistanceKm: next.defaultDistanceKm,
+      paceKmh: next.defaultPaceKmh,
+      routeCount: null,
+    });
+  };
 
   /** Garde les trois bornes d'arrêts cohérentes entre elles. */
   const setStops = (key: 'stopsMin' | 'stopsTarget' | 'stopsMax', value: number) => {
@@ -123,6 +154,29 @@ export const RouteConfigPanel: React.FC<Props> = ({
     });
   };
 
+  const askRecommendation = async () => {
+    setRecommendLoading(true);
+    try {
+      const result = await onRecommend();
+      if (result) setRecommendation(result);
+    } finally {
+      setRecommendLoading(false);
+    }
+  };
+
+  const applyRecommendation = () => {
+    if (!recommendation) return;
+    onChange({
+      routeCount: recommendation.routeCount,
+      stopsMin: recommendation.stopsMin,
+      stopsTarget: recommendation.stopsTarget,
+      stopsMax: recommendation.stopsMax,
+      maxDistanceKm: recommendation.maxDistanceKm,
+      themeMode: recommendation.themeMode,
+      loop: recommendation.loop,
+    });
+  };
+
   return (
     <div className="max-w-5xl mx-auto space-y-6 animate-fade-in">
       <button
@@ -131,6 +185,61 @@ export const RouteConfigPanel: React.FC<Props> = ({
       >
         <ArrowLeft className="w-4 h-4" /> Revenir à l'inventaire
       </button>
+
+      {/* Mode de déplacement ---------------------------------------------- */}
+      <div className="grid grid-cols-2 gap-3">
+        {(
+          [
+            ['walk', 'À pied', <Footprints key="w" className="w-5 h-5" />],
+            ['bike', 'À vélo', <Bike key="b" className="w-5 h-5" />],
+          ] as const
+        ).map(([mode, label, icon]) => (
+          <button
+            key={mode}
+            onClick={() => switchMode(mode)}
+            className={`p-4 rounded-2xl border-2 font-bold transition-all flex items-center justify-center gap-3 ${
+              config.travelMode === mode
+                ? 'border-nirmie-500 bg-nirmie-50 text-nirmie-700 shadow-sm'
+                : 'border-gray-100 bg-white text-gray-400 hover:border-gray-200'
+            }`}
+          >
+            {icon}
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {config.travelMode === 'bike' && (
+        <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 space-y-2 animate-fade-in">
+          <p className="text-xs font-black text-blue-700 uppercase tracking-widest">
+            Itinéraires cyclables balisés à {scan.city.name}
+          </p>
+          {scan.cycleRoutes.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {scan.cycleRoutes.map((route) => (
+                <span
+                  key={route.id}
+                  className="px-3 py-1.5 rounded-lg bg-white border border-blue-200 text-[11px] font-bold text-blue-800"
+                  title={route.network === 'ncn' ? 'Itinéraire national' : route.network === 'rcn' ? 'Itinéraire régional' : 'Itinéraire local'}
+                >
+                  {route.ref ? `${route.ref} · ` : ''}
+                  {route.name}
+                  {route.distanceKm ? ` (${route.distanceKm} km)` : ''}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-blue-800">
+              Aucun itinéraire balisé relevé sur la commune.
+            </p>
+          )}
+          <p className="text-[10px] text-blue-600/80 leading-relaxed">
+            Les parcours relient les lieux à vol d'oiseau corrigé : vérifiez le tracé
+            réel sur Google Maps (mode vélo) avant publication, il privilégiera les
+            pistes cyclables.
+          </p>
+        </div>
+      )}
 
       {/* Capacité ---------------------------------------------------------- */}
       <div className="bg-gradient-to-br from-nirmie-500 to-nirmie-600 text-white rounded-3xl p-6 shadow-lg">
@@ -161,14 +270,71 @@ export const RouteConfigPanel: React.FC<Props> = ({
 
         <p className="text-[11px] text-nirmie-100/70 mt-4 leading-relaxed max-w-xl">
           Plafond théorique. Le résultat peut être légèrement inférieur : les lieux trop
-          isolés pour rejoindre un groupe dans le budget de marche sont laissés de côté.
+          isolés pour rejoindre un groupe dans le budget de{' '}
+          {config.travelMode === 'bike' ? 'trajet' : 'marche'} sont laissés de côté.
         </p>
+      </div>
 
-        {impossible && (
-          <p className="mt-4 bg-white/15 rounded-xl p-3 text-sm">
-            Pas assez de lieux retenus pour former un parcours d'au moins {config.stopsMin} arrêts.
-            Baissez le minimum d'arrêts, ou retenez plus de lieux dans l'inventaire.
-          </p>
+      {/* Préconisation IA -------------------------------------------------- */}
+      <div className="bg-white rounded-3xl border-2 border-dashed border-purple-200 p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="flex items-center gap-2 text-sm font-black text-purple-700 uppercase tracking-wide">
+              <Sparkles className="w-4 h-4" />
+              Préconisation IA
+            </h3>
+            <p className="text-[11px] text-gray-400 mt-1">
+              L'IA analyse l'inventaire et propose un plan : nombre de parcours, tailles,
+              composition. Vous restez libre de tout modifier ensuite.
+            </p>
+          </div>
+          <button
+            onClick={askRecommendation}
+            disabled={recommendLoading || !aiAvailable || impossible}
+            title={aiAvailable ? undefined : 'Clé Gemini absente'}
+            className="px-5 py-2.5 rounded-xl bg-purple-600 text-white text-sm font-bold hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {recommendLoading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Sparkles className="w-4 h-4" />
+            )}
+            {recommendLoading ? 'Analyse…' : 'Demander une préconisation'}
+          </button>
+        </div>
+
+        {recommendation && (
+          <div className="bg-purple-50 rounded-2xl p-4 space-y-3 animate-fade-in relative">
+            <button
+              onClick={() => setRecommendation(null)}
+              className="absolute top-3 right-3 p-1 text-purple-300 hover:text-purple-600 rounded"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <div className="flex flex-wrap gap-2 pr-8">
+              {[
+                `${recommendation.routeCount} parcours`,
+                `${recommendation.stopsMin}–${recommendation.stopsMax} arrêts (cible ${recommendation.stopsTarget})`,
+                `${recommendation.maxDistanceKm} km max`,
+                recommendation.themeMode === 'thematic' ? 'un thème par parcours' : 'thèmes mélangés',
+                recommendation.loop ? 'en boucle' : 'en ligne',
+              ].map((chip) => (
+                <span
+                  key={chip}
+                  className="px-3 py-1 rounded-full bg-white border border-purple-200 text-[11px] font-bold text-purple-800"
+                >
+                  {chip}
+                </span>
+              ))}
+            </div>
+            <p className="text-xs text-purple-900 leading-relaxed">{recommendation.rationale}</p>
+            <button
+              onClick={applyRecommendation}
+              className="w-full py-2.5 rounded-xl bg-purple-600 text-white text-sm font-bold hover:bg-purple-700 transition-colors"
+            >
+              Appliquer ces réglages
+            </button>
+          </div>
         )}
       </div>
 
@@ -210,8 +376,8 @@ export const RouteConfigPanel: React.FC<Props> = ({
 
           <Section
             icon={<Ruler className="w-4 h-4 text-nirmie-500" />}
-            title="Longueur de marche"
-            hint="Budget de marche par parcours, hors temps de visite."
+            title={config.travelMode === 'bike' ? 'Longueur du circuit' : 'Longueur de marche'}
+            hint="Budget de trajet par parcours, hors temps de visite."
           >
             <div className="space-y-3">
               <div className="flex items-center justify-between">
@@ -222,17 +388,19 @@ export const RouteConfigPanel: React.FC<Props> = ({
               </div>
               <input
                 type="range"
-                min="1"
-                max="15"
+                min={preset.distanceMinKm}
+                max={preset.distanceMaxKm}
                 step="0.5"
                 disabled={config.maxDistanceKm === null}
-                value={config.maxDistanceKm ?? 4}
+                value={config.maxDistanceKm ?? preset.defaultDistanceKm}
                 onChange={(e) => onChange({ maxDistanceKm: Number(e.target.value) })}
                 className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-nirmie-500 disabled:opacity-40"
               />
               <button
                 onClick={() =>
-                  onChange({ maxDistanceKm: config.maxDistanceKm === null ? 4 : null })
+                  onChange({
+                    maxDistanceKm: config.maxDistanceKm === null ? preset.defaultDistanceKm : null,
+                  })
                 }
                 className={`w-full py-2 rounded-xl text-xs font-bold border-2 transition-colors flex items-center justify-center gap-2 ${
                   config.maxDistanceKm === null
@@ -250,15 +418,11 @@ export const RouteConfigPanel: React.FC<Props> = ({
 
           <Section
             icon={<Gauge className="w-4 h-4 text-nirmie-500" />}
-            title="Rythme de marche"
+            title="Rythme"
             hint="Sert au calcul des durées affichées."
           >
             <div className="grid grid-cols-3 gap-2">
-              {[
-                { value: 3.4, label: 'Flânerie' },
-                { value: 4.2, label: 'Normal' },
-                { value: 5, label: 'Soutenu' },
-              ].map((pace) => (
+              {preset.paces.map((pace) => (
                 <button
                   key={pace.value}
                   onClick={() => onChange({ paceKmh: pace.value })}
@@ -377,12 +541,19 @@ export const RouteConfigPanel: React.FC<Props> = ({
         </div>
       </div>
 
+      {impossible && (
+        <p className="bg-amber-50 border border-amber-100 rounded-2xl p-4 text-sm text-amber-800">
+          Pas assez de lieux retenus pour former un parcours d'au moins {config.stopsMin} arrêts.
+          Baissez le minimum d'arrêts, ou retenez plus de lieux dans l'inventaire.
+        </p>
+      )}
+
       <button
         onClick={onGenerate}
         disabled={impossible}
         className="w-full py-5 rounded-2xl bg-nirmie-500 text-white text-lg font-bold shadow-lg hover:bg-nirmie-600 active:scale-[0.99] transition-all flex items-center justify-center gap-3 disabled:bg-gray-300 disabled:shadow-none disabled:cursor-not-allowed"
       >
-        <Wand2 className="w-6 h-6" />
+        {config.travelMode === 'bike' ? <Bike className="w-6 h-6" /> : <Wand2 className="w-6 h-6" />}
         {config.routeCount === null
           ? `Générer jusqu'à ${routeCount} parcours`
           : `Générer ${routeCount} parcours`}

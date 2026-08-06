@@ -1,5 +1,6 @@
 import { computeCapacity, planRoutes, applyFilters } from '../services/routePlanner';
 import { pathLengthM, haversineM } from '../services/geo';
+import { safetyExclusion } from '../services/osmService';
 import { DEFAULT_ROUTE_CONFIG, POI, POI_THEMES, PoiTheme, RouteConfig } from '../types';
 
 let failures = 0;
@@ -158,6 +159,39 @@ console.log('\n== Cas limites ==');
   check('1 POI => aucun parcours', planRoutes(makeCity(1), 'X', cfg()).length === 0);
   const tiny = planRoutes(makeCity(4), 'X', cfg({ stopsMin: 4, stopsTarget: 4, stopsMax: 4, maxDistanceKm: null }));
   check('exactement assez de POI => 1 parcours', tiny.length === 1, `${tiny.length}`);
+}
+
+console.log('\n== Règles de sécurité ==');
+{
+  const excluded: [string, Record<string, string>][] = [
+    ['accès privé', { tourism: 'attraction', name: 'X', access: 'private' }],
+    ['accès interdit', { historic: 'castle', name: 'X', access: 'no' }],
+    ['clientèle uniquement', { leisure: 'garden', name: 'X', access: 'customers' }],
+    ['zone militaire (tag military)', { historic: 'fort', name: 'X', military: 'base' }],
+    ['zone militaire (landuse)', { tourism: 'attraction', name: 'X', landuse: 'military' }],
+    ['site dangereux signalé', { tourism: 'viewpoint', name: 'X', hazard: 'cliff' }],
+    ['grotte', { name: 'X', natural: 'cave_entrance' }],
+    ['sommet', { name: 'X', natural: 'peak' }],
+    ['falaise', { name: 'X', natural: 'cliff' }],
+    ["site à l'abandon", { tourism: 'theme_park', name: 'X', abandoned: 'yes' }],
+    ['site en travaux', { historic: 'building', name: 'X', construction: 'yes' }],
+    ['passage à niveau', { name: 'X', railway: 'level_crossing' }],
+    ['installation électrique', { name: 'X', power: 'substation' }],
+  ];
+  excluded.forEach(([label, tags]) => {
+    check(`exclu : ${label}`, safetyExclusion(tags) !== null, safetyExclusion(tags) || '');
+  });
+
+  const allowed: [string, Record<string, string>][] = [
+    ['musée public', { tourism: 'museum', name: 'X', wikidata: 'Q1' }],
+    ['château ouvert', { historic: 'castle', name: 'X', access: 'yes' }],
+    ['parc sans tag access', { leisure: 'park', name: 'X' }],
+    ['point de vue aménagé', { tourism: 'viewpoint', name: 'X' }],
+    ['ruines touristiques entretenues', { historic: 'ruins', name: 'X', tourism: 'attraction' }],
+  ];
+  allowed.forEach(([label, tags]) => {
+    check(`admis : ${label}`, safetyExclusion(tags) === null, safetyExclusion(tags) || '');
+  });
 }
 
 console.log(failures === 0 ? '\nTous les tests passent.\n' : `\n${failures} test(s) en échec.\n`);

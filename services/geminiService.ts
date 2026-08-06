@@ -7,7 +7,17 @@
  */
 
 import { GoogleGenAI, Type, Schema } from '@google/genai';
-import { CityInfo, GeneratedRoute, POI, PoiTheme, POI_THEMES } from '../types';
+import {
+  AiRecommendation,
+  CityInfo,
+  CityScan,
+  GeneratedRoute,
+  MODE_PRESETS,
+  POI,
+  PoiTheme,
+  POI_THEMES,
+  TravelMode,
+} from '../types';
 
 const ENRICH_MODEL = 'gemini-3-flash-preview';
 const SUGGEST_MODEL = 'gemini-3-flash-preview';
@@ -165,6 +175,134 @@ export const enrichRoutes = async (
   }
 
   return { routes: enriched, failures };
+};
+
+// --------------------------------------------------------------------------
+// Préconisation de plan
+// --------------------------------------------------------------------------
+
+const recommendationSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    routeCount: { type: Type.INTEGER, description: 'Nombre de parcours conseillé' },
+    stopsMin: { type: Type.INTEGER },
+    stopsTarget: { type: Type.INTEGER },
+    stopsMax: { type: Type.INTEGER },
+    maxDistanceKm: { type: Type.NUMBER },
+    themeMode: { type: Type.STRING, description: '"mixed" ou "thematic"' },
+    loop: { type: Type.BOOLEAN },
+    rationale: {
+      type: Type.STRING,
+      description: 'Justification en français, 50 à 90 mots, ton direct',
+    },
+  },
+  required: [
+    'routeCount',
+    'stopsMin',
+    'stopsTarget',
+    'stopsMax',
+    'maxDistanceKm',
+    'themeMode',
+    'loop',
+    'rationale',
+  ],
+};
+
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, Math.round(value)));
+
+/**
+ * Demande à l'IA un plan de production pour la ville : combien de parcours,
+ * quelle taille, quelle composition. Le résultat pré-remplit les réglages,
+ * l'utilisateur garde la main sur tout.
+ */
+export const recommendPlan = async (
+  scan: CityScan,
+  pool: POI[],
+  travelMode: TravelMode
+): Promise<AiRecommendation> => {
+  const ai = getClient();
+  const preset = MODE_PRESETS[travelMode];
+
+  const byTheme = POI_THEMES.map(
+    (t) => `${t} : ${pool.filter((p) => p.theme === t).length}`
+  ).join(', ');
+  const famous = pool
+    .filter((p) => p.notoriety >= 60)
+    .slice(0, 15)
+    .map((p) => p.name)
+    .join(', ');
+  const cycleInfo =
+    travelMode === 'bike' && scan.cycleRoutes.length > 0
+      ? `Itinéraires cyclables balisés sur place : ${scan.cycleRoutes
+          .slice(0, 8)
+          .map((r) => r.name)
+          .join(', ')}.`
+      : '';
+
+  const prompt = `Tu prépares la production de parcours touristiques ${
+    travelMode === 'bike' ? 'à vélo' : 'à pied'
+  } pour ${scan.city.name} (${scan.city.displayName}).
+
+Inventaire réel : ${pool.length} lieux exploitables. Répartition : ${byTheme}.
+Lieux les plus notables : ${famous || 'aucun lieu majeur'}.
+${cycleInfo}
+
+Propose un plan de production : combien de parcours publier, avec quelles bornes d'arrêts (min/cible/max), quelle distance maximale par parcours (entre ${preset.distanceMinKm} et ${preset.distanceMaxKm} km, mode ${
+    travelMode === 'bike' ? 'vélo' : 'marche'
+  }), en boucle ou non, thèmes mélangés ou un thème par parcours.
+
+Raisonne en éditeur d'application touristique : mieux vaut peu de parcours excellents que beaucoup de parcours dilués. Les lieux mineurs n'ont pas tous vocation à être utilisés. Justifie en 50 à 90 mots.`;
+
+  const response = await ai.models.generateContent({
+    model: ENRICH_MODEL,
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: recommendationSchema,
+      temperature: 0.4,
+    },
+  });
+
+  const raw = JSON.parse(response.text || '{}');
+
+  // L'IA propose, le code garantit : tout est reborné avant application.
+  const stopsMin = clamp(raw.stopsMin ?? 4, 2, 12);
+  const stopsTarget = clamp(raw.stopsTarget ?? stopsMin + 2, stopsMin, 15);
+  const stopsMax = clamp(raw.stopsMax ?? stopsTarget + 3, stopsTarget, 20);
+  const hardMax = Math.floor(pool.length / Math.max(1, stopsMin));
+
+  return {
+    routeCount: clamp(raw.routeCount ?? 1, 1, Math.max(1, hardMax)),
+    stopsMin,
+    stopsTarget,
+    stopsMax,
+    maxDistanceKm:
+      Math.round(
+        clamp(raw.maxDistanceKm ?? preset.defaultDistanceKm, preset.distanceMinKm, preset.distanceMaxKm) * 2
+      ) / 2,
+    themeMode: raw.themeMode === 'thematic' ? 'thematic' : 'mixed',
+    loop: Boolean(raw.loop),
+    rationale: String(raw.rationale || '').trim(),
+  };
+};
+
+// --------------------------------------------------------------------------
+// Explication d'un lieu (secours quand Wikipédia ne connaît pas le lieu)
+// --------------------------------------------------------------------------
+
+export const explainPoi = async (city: CityInfo, poi: POI): Promise<string> => {
+  const ai = getClient();
+
+  const response = await ai.models.generateContent({
+    model: ENRICH_MODEL,
+    contents: `Lieu : ${poi.name} (${poi.subtype}) à ${city.name} (${city.displayName}), coordonnées ${poi.lat.toFixed(4)}, ${poi.lng.toFixed(4)}.
+
+Explique ce lieu à un visiteur en 50 à 80 mots : ce que c'est, ce qu'on y voit, et si tu le sais avec certitude, un élément d'histoire. Si tu ne connais pas ce lieu précis, décris honnêtement ce que son type et son quartier laissent attendre, sans inventer de dates ni de faits. Français, ton direct, pas de superlatifs creux.`,
+    config: { temperature: 0.5 },
+  });
+
+  return (response.text || '').trim();
 };
 
 // --------------------------------------------------------------------------

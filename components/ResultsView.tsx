@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   ArrowLeft,
+  Bike,
   Bookmark,
   BookmarkCheck,
   Clock,
@@ -27,10 +28,13 @@ interface Props {
 
 export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved }) => {
   const themeColor = THEME_COLORS[route.summary.theme as PoiTheme] || '#10b981';
+  const isBike = route.summary.travelMode === 'bike';
+  const ModeIcon = isBike ? Bike : Footprints;
 
   /**
    * Google Maps n'accepte que 10 points dans une URL de directions. Au-delà on
-   * tronque plutôt que d'ouvrir un lien cassé.
+   * tronque plutôt que d'ouvrir un lien cassé. En mode vélo, Google privilégie
+   * de lui-même les pistes cyclables.
    */
   const openGoogleMaps = () => {
     if (route.steps.length < 2) return;
@@ -40,7 +44,9 @@ export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved })
     const middle = route.summary.loop ? coords.slice(1) : coords.slice(1, -1);
     const waypoints = middle.length > 0 ? `&waypoints=${middle.join('|')}` : '';
     window.open(
-      `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypoints}&travelmode=walking`,
+      `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypoints}&travelmode=${
+        isBike ? 'bicycling' : 'walking'
+      }`,
       '_blank'
     );
   };
@@ -90,7 +96,7 @@ export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved })
               <MapPin className="w-4 h-4" /> {route.summary.stopsCount} arrêts
             </span>
             <span className="flex items-center gap-2">
-              <Footprints className="w-4 h-4" /> {route.summary.totalDistanceKm} km
+              <ModeIcon className="w-4 h-4" /> {route.summary.totalDistanceKm} km
             </span>
             <span className="flex items-center gap-2">
               <Clock className="w-4 h-4" /> {formatDuration(route.summary.totalMinutes)}
@@ -102,7 +108,7 @@ export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved })
             )}
           </div>
           <p className="text-[11px] text-white/70 mt-2">
-            {formatDuration(route.summary.walkingMinutes)} de marche +{' '}
+            {formatDuration(route.summary.walkingMinutes)} de {isBike ? 'vélo' : 'marche'} +{' '}
             {formatDuration(route.summary.visitMinutes)} de visite
           </p>
         </div>

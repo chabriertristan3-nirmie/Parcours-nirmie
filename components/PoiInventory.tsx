@@ -1,13 +1,16 @@
 import React, { useMemo, useState } from 'react';
 import {
   ArrowRight,
+  BookOpen,
   Check,
+  ExternalLink,
   Info,
   Loader2,
   MapPin,
   Plus,
   RefreshCw,
   Search,
+  ShieldCheck,
   Sparkles,
   Star,
   Trash2,
@@ -15,6 +18,8 @@ import {
 } from 'lucide-react';
 import { CityScan, POI, PoiFilters, PoiTheme, POI_THEMES, THEME_COLORS } from '../types';
 import { applyFilters } from '../services/routePlanner';
+import { explainFromSources, cacheAiExplanation, PoiExplanation } from '../services/wikiService';
+import { explainPoi } from '../services/geminiService';
 import { MapView } from './MapView';
 
 interface Props {
@@ -70,6 +75,46 @@ export const PoiInventory: React.FC<Props> = ({
   const [hovered, setHovered] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [manual, setManual] = useState({ name: '', lat: '', lng: '', theme: POI_THEMES[0] as PoiTheme });
+
+  /** Lieu dont l'explication est dépliée, et contenu chargé par lieu. */
+  const [explainedId, setExplainedId] = useState<string | null>(null);
+  const [explanations, setExplanations] = useState<
+    Record<string, { loading: boolean; data?: PoiExplanation; error?: string }>
+  >({});
+
+  const toggleExplanation = async (poi: POI) => {
+    if (explainedId === poi.id) {
+      setExplainedId(null);
+      return;
+    }
+    setExplainedId(poi.id);
+    if (explanations[poi.id]?.data) return;
+
+    setExplanations((prev) => ({ ...prev, [poi.id]: { loading: true } }));
+    try {
+      // Wikipédia / Wikidata d'abord : factuel et gratuit.
+      let result = await explainFromSources(poi);
+      // Sinon l'IA, clairement signalée comme telle.
+      if (!result && aiAvailable) {
+        const text = await explainPoi(scan.city, poi);
+        if (text) {
+          cacheAiExplanation(poi.id, text);
+          result = { text, source: 'ai' };
+        }
+      }
+      setExplanations((prev) => ({
+        ...prev,
+        [poi.id]: result
+          ? { loading: false, data: result }
+          : { loading: false, error: 'Aucune information disponible sur ce lieu.' },
+      }));
+    } catch {
+      setExplanations((prev) => ({
+        ...prev,
+        [poi.id]: { loading: false, error: "Le chargement de l'explication a échoué." },
+      }));
+    }
+  };
 
   const visible = useMemo(() => applyFilters(scan.pois, filters), [scan.pois, filters]);
 
@@ -204,6 +249,20 @@ export const PoiInventory: React.FC<Props> = ({
           })}
         </div>
 
+        {scan.excludedCount > 0 && (
+          <div className="bg-nirmie-50 border border-nirmie-100 rounded-2xl p-3">
+            <p className="text-[11px] text-nirmie-800 flex items-start gap-2">
+              <ShieldCheck className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-nirmie-600" />
+              <span>
+                <strong>{scan.excludedCount}</strong> lieu{scan.excludedCount > 1 ? 'x' : ''}{' '}
+                écarté{scan.excludedCount > 1 ? 's' : ''} automatiquement par les règles de
+                sécurité : accès privé ou restreint, zones militaires, sites dangereux
+                (falaises, grottes, chantiers), lieux à l'abandon.
+              </span>
+            </p>
+          </div>
+        )}
+
         {scan.notes.length > 0 && (
           <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 space-y-1">
             {scan.notes.map((note, i) => (
@@ -312,63 +371,129 @@ export const PoiInventory: React.FC<Props> = ({
               {visible.map((poi) => {
                 const selected = selectedIds.has(poi.id);
                 const badge = SOURCE_BADGES[poi.source];
+                const explanation = explanations[poi.id];
+                const isExplained = explainedId === poi.id;
                 return (
-                  <div
-                    key={poi.id}
-                    onMouseEnter={() => setHovered(poi.id)}
-                    onMouseLeave={() => setHovered(null)}
-                    onClick={() => togglePoi(poi.id)}
-                    className={`px-5 py-3 flex items-center gap-4 cursor-pointer transition-colors ${
-                      selected ? 'bg-nirmie-50/60' : 'hover:bg-gray-50'
-                    }`}
-                  >
+                  <React.Fragment key={poi.id}>
                     <div
-                      className={`w-5 h-5 rounded-md border-2 flex-shrink-0 flex items-center justify-center transition-colors ${
-                        selected
-                          ? 'bg-nirmie-500 border-nirmie-500'
-                          : 'border-gray-300 bg-white'
+                      onMouseEnter={() => setHovered(poi.id)}
+                      onMouseLeave={() => setHovered(null)}
+                      onClick={() => togglePoi(poi.id)}
+                      className={`px-5 py-3 flex items-center gap-4 cursor-pointer transition-colors ${
+                        selected ? 'bg-nirmie-50/60' : 'hover:bg-gray-50'
                       }`}
                     >
-                      {selected && <Check className="w-3.5 h-3.5 text-white" strokeWidth={3} />}
-                    </div>
-
-                    <span
-                      className="w-2 h-8 rounded-full flex-shrink-0"
-                      style={{ background: THEME_COLORS[poi.theme] }}
-                    />
-
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <h4 className="font-bold text-gray-800 text-sm truncate">{poi.name}</h4>
-                        {badge && poi.source !== 'osm' && (
-                          <span
-                            className={`text-[9px] font-black px-1.5 py-0.5 rounded ${badge.className}`}
-                          >
-                            {badge.label}
-                          </span>
-                        )}
+                      <div
+                        className={`w-5 h-5 rounded-md border-2 flex-shrink-0 flex items-center justify-center transition-colors ${
+                          selected
+                            ? 'bg-nirmie-500 border-nirmie-500'
+                            : 'border-gray-300 bg-white'
+                        }`}
+                      >
+                        {selected && <Check className="w-3.5 h-3.5 text-white" strokeWidth={3} />}
                       </div>
-                      <p className="text-[11px] text-gray-400 truncate">
-                        {poi.subtype}
-                        {poi.address ? ` • ${poi.address}` : ''} • {poi.visitMinutes} min
-                      </p>
-                    </div>
 
-                    <NotorietyStars score={poi.notoriety} />
+                      <span
+                        className="w-2 h-8 rounded-full flex-shrink-0"
+                        style={{ background: THEME_COLORS[poi.theme] }}
+                      />
 
-                    {poi.source !== 'osm' && (
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-bold text-gray-800 text-sm truncate">{poi.name}</h4>
+                          {badge && poi.source !== 'osm' && (
+                            <span
+                              className={`text-[9px] font-black px-1.5 py-0.5 rounded ${badge.className}`}
+                            >
+                              {badge.label}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-gray-400 truncate">
+                          {poi.subtype}
+                          {poi.address ? ` • ${poi.address}` : ''} • {poi.visitMinutes} min
+                        </p>
+                      </div>
+
+                      <NotorietyStars score={poi.notoriety} />
+
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          onRemovePoi(poi.id);
+                          toggleExplanation(poi);
                         }}
-                        className="p-1.5 text-gray-300 hover:text-red-500 rounded-lg transition-colors"
-                        title="Retirer de l'inventaire"
+                        className={`p-1.5 rounded-lg transition-colors ${
+                          isExplained
+                            ? 'text-nirmie-600 bg-nirmie-50'
+                            : 'text-gray-300 hover:text-nirmie-600 hover:bg-nirmie-50'
+                        }`}
+                        title="En savoir plus sur ce lieu"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <BookOpen className="w-4 h-4" />
                       </button>
+
+                      {poi.source !== 'osm' && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onRemovePoi(poi.id);
+                          }}
+                          className="p-1.5 text-gray-300 hover:text-red-500 rounded-lg transition-colors"
+                          title="Retirer de l'inventaire"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+
+                    {isExplained && (
+                      <div className="px-5 py-4 bg-gray-50/80 border-l-4 animate-fade-in"
+                        style={{ borderLeftColor: THEME_COLORS[poi.theme] }}
+                      >
+                        {explanation?.loading && (
+                          <p className="text-xs text-gray-400 flex items-center gap-2">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Recherche
+                            d'informations…
+                          </p>
+                        )}
+                        {explanation?.error && (
+                          <p className="text-xs text-gray-400">{explanation.error}</p>
+                        )}
+                        {explanation?.data && (
+                          <div className="space-y-2">
+                            <p className="text-xs text-gray-600 leading-relaxed">
+                              {explanation.data.text}
+                            </p>
+                            <p className="text-[10px] font-bold flex items-center gap-2">
+                              {explanation.data.source === 'ai' ? (
+                                <span className="text-purple-500">
+                                  Rédigé par l'IA — à vérifier avant publication
+                                </span>
+                              ) : (
+                                <span className="text-gray-400">
+                                  Source :{' '}
+                                  {explanation.data.source === 'wikipedia'
+                                    ? 'Wikipédia'
+                                    : 'Wikidata'}
+                                </span>
+                              )}
+                              {explanation.data.url && (
+                                <a
+                                  href={explanation.data.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="text-nirmie-600 hover:underline flex items-center gap-1"
+                                >
+                                  Lire la fiche <ExternalLink className="w-3 h-3" />
+                                </a>
+                              )}
+                            </p>
+                          </div>
+                        )}
+                      </div>
                     )}
-                  </div>
+                  </React.Fragment>
                 );
               })}
             </div>

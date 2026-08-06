@@ -25,7 +25,13 @@ import { RouteSelection } from './components/RouteSelection';
 import { ResultsView } from './components/ResultsView';
 import { clearScanCache, dedupePois, scanCity } from './services/osmService';
 import { applyFilters, computeCapacity, planRoutes } from './services/routePlanner';
-import { enrichRoutes, hasApiKey, suggestMissingPOIs } from './services/geminiService';
+import {
+  enrichRoutes,
+  hasApiKey,
+  recommendPlan,
+  suggestMissingPOIs,
+} from './services/geminiService';
+import { exportPackToSupabase, isSupabaseConfigured } from './services/supabaseService';
 import { downloadPackJson } from './services/exporters';
 
 type View = 'city' | 'inventory' | 'config' | 'generating' | 'selection' | 'result';
@@ -50,6 +56,8 @@ const App: React.FC = () => {
 
   const [routes, setRoutes] = useState<GeneratedRoute[]>([]);
   const [activeRoute, setActiveRoute] = useState<GeneratedRoute | null>(null);
+  /** Le pack actuellement affiché sur l'écran de sélection (pour les exports). */
+  const [activePack, setActivePack] = useState<SavedPack | null>(null);
   const [progress, setProgress] = useState('');
 
   const [scanLoading, setScanLoading] = useState(false);
@@ -64,6 +72,7 @@ const App: React.FC = () => {
   );
 
   const aiAvailable = useMemo(() => hasApiKey(), []);
+  const supabaseAvailable = useMemo(() => isSupabaseConfigured(), []);
 
   useEffect(() => {
     localStorage.setItem('nirmie_packs', JSON.stringify(packs));
@@ -214,22 +223,32 @@ const App: React.FC = () => {
 
     setError(notices.length > 0 ? notices.join(' ') : null);
 
+    const pack: SavedPack = {
+      id: `pack-${Date.now()}`,
+      cityName: scan.city.name,
+      createdAt: new Date().toISOString(),
+      routes: planned,
+      config,
+    };
     setRoutes(planned);
-    setPacks((prev) =>
-      [
-        {
-          id: `pack-${Date.now()}`,
-          cityName: scan.city.name,
-          createdAt: new Date().toISOString(),
-          routes: planned,
-          config,
-        },
-        ...prev,
-      ].slice(0, 20)
-    );
+    setActivePack(pack);
+    setPacks((prev) => [pack, ...prev].slice(0, 20));
     setView('selection');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [scan, pool, config, aiAvailable]);
+
+  /** Préconisation IA depuis l'écran de réglages. */
+  const handleRecommend = useCallback(async () => {
+    if (!scan) return null;
+    try {
+      return await recommendPlan(scan, pool, config.travelMode);
+    } catch (err) {
+      setError(
+        `La préconisation IA a échoué (${err instanceof Error ? err.message : 'erreur'}).`
+      );
+      return null;
+    }
+  }, [scan, pool, config.travelMode]);
 
   // -----------------------------------------------------------------------
   // Archives
@@ -247,6 +266,7 @@ const App: React.FC = () => {
 
   const openPack = (pack: SavedPack) => {
     setRoutes(pack.routes);
+    setActivePack(pack);
     setConfig(pack.config);
     setView('selection');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -446,6 +466,7 @@ const App: React.FC = () => {
 
         {view === 'config' && scan && (
           <RouteConfigPanel
+            scan={scan}
             pool={pool}
             config={config}
             capacity={capacity}
@@ -453,6 +474,7 @@ const App: React.FC = () => {
             onBack={() => setView('inventory')}
             onGenerate={handleGenerate}
             aiAvailable={aiAvailable}
+            onRecommend={handleRecommend}
           />
         )}
 
@@ -478,13 +500,20 @@ const App: React.FC = () => {
             onSelect={openRoute}
             onBack={() => setView(scan ? 'config' : 'city')}
             onExportAll={() =>
-              downloadPackJson({
-                id: `pack-${Date.now()}`,
-                cityName: currentCity,
-                createdAt: new Date().toISOString(),
-                routes,
-                config,
-              })
+              downloadPackJson(
+                activePack ?? {
+                  id: `pack-${Date.now()}`,
+                  cityName: currentCity,
+                  createdAt: new Date().toISOString(),
+                  routes,
+                  config,
+                }
+              )
+            }
+            onSupabaseExport={
+              supabaseAvailable && activePack
+                ? () => exportPackToSupabase(activePack)
+                : null
             }
           />
         )}
