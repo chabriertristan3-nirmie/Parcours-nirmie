@@ -12,6 +12,7 @@ import {
   Ruler,
   Shuffle,
   Sparkles,
+  Stethoscope,
   Wand2,
   X,
 } from 'lucide-react';
@@ -25,6 +26,7 @@ import {
   TravelMode,
 } from '../types';
 import { formatDuration } from '../services/geo';
+import { checkConnection, ConnectionCheck } from '../services/geminiService';
 
 interface Props {
   scan: CityScan;
@@ -35,7 +37,8 @@ interface Props {
   onBack: () => void;
   onGenerate: () => void;
   aiAvailable: boolean;
-  onRecommend: () => Promise<AiRecommendation | null>;
+  /** Renvoie la préconisation, ou le message d'erreur à afficher tel quel. */
+  onRecommend: () => Promise<{ recommendation: AiRecommendation } | { error: string }>;
 }
 
 const Section: React.FC<{
@@ -109,6 +112,9 @@ export const RouteConfigPanel: React.FC<Props> = ({
 }) => {
   const [recommendation, setRecommendation] = useState<AiRecommendation | null>(null);
   const [recommendLoading, setRecommendLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [diagnostic, setDiagnostic] = useState<ConnectionCheck | null>(null);
+  const [diagnosticLoading, setDiagnosticLoading] = useState(false);
 
   const preset = MODE_PRESETS[config.travelMode];
   const routeCount = config.routeCount ?? capacity.maxRoutes;
@@ -157,11 +163,24 @@ export const RouteConfigPanel: React.FC<Props> = ({
 
   const askRecommendation = async () => {
     setRecommendLoading(true);
+    setAiError(null);
+    setDiagnostic(null);
     try {
       const result = await onRecommend();
-      if (result) setRecommendation(result);
+      if ('error' in result) setAiError(result.error);
+      else setRecommendation(result.recommendation);
     } finally {
       setRecommendLoading(false);
+    }
+  };
+
+  const runDiagnostic = async () => {
+    setDiagnosticLoading(true);
+    setAiError(null);
+    try {
+      setDiagnostic(await checkConnection());
+    } finally {
+      setDiagnosticLoading(false);
     }
   };
 
@@ -291,20 +310,76 @@ export const RouteConfigPanel: React.FC<Props> = ({
               composition. Vous restez libre de tout modifier ensuite.
             </p>
           </div>
-          <button
-            onClick={askRecommendation}
-            disabled={recommendLoading || !aiAvailable || impossible}
-            title={aiAvailable ? undefined : 'Clé Gemini absente'}
-            className="px-5 py-2.5 rounded-xl bg-purple-600 text-white text-sm font-bold hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {recommendLoading ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Sparkles className="w-4 h-4" />
-            )}
-            {recommendLoading ? 'Analyse…' : 'Demander une préconisation'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={runDiagnostic}
+              disabled={diagnosticLoading || !aiAvailable}
+              title="Vérifie que la clé Gemini fonctionne et affiche l'erreur exacte le cas échéant"
+              className="px-3 py-2.5 rounded-xl border-2 border-purple-200 text-purple-600 text-xs font-bold hover:bg-purple-50 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {diagnosticLoading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Stethoscope className="w-3.5 h-3.5" />
+              )}
+              Tester la clé
+            </button>
+            <button
+              onClick={askRecommendation}
+              disabled={recommendLoading || !aiAvailable || impossible}
+              title={aiAvailable ? undefined : 'Clé Gemini absente'}
+              className="px-5 py-2.5 rounded-xl bg-purple-600 text-white text-sm font-bold hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {recommendLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4" />
+              )}
+              {recommendLoading ? 'Analyse…' : 'Demander une préconisation'}
+            </button>
+          </div>
         </div>
+
+        {!aiAvailable && (
+          <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 text-xs text-amber-800 leading-relaxed space-y-1">
+            <p className="font-bold">Clé Gemini non détectée.</p>
+            <p>
+              Créez un fichier nommé <code className="font-mono bg-white px-1 rounded">.env.local</code>{' '}
+              à la racine du projet (au même niveau que <code className="font-mono bg-white px-1 rounded">package.json</code>),
+              contenant une seule ligne :
+            </p>
+            <p className="font-mono bg-white px-2 py-1 rounded border border-amber-200">
+              GEMINI_API_KEY=AIza...
+            </p>
+            <p>
+              Puis <strong>redémarrez le serveur</strong> : Ctrl+C dans le terminal, puis{' '}
+              <code className="font-mono bg-white px-1 rounded">npm run dev</code>. La clé n'est lue
+              qu'au démarrage.
+            </p>
+          </div>
+        )}
+
+        {diagnostic && (
+          <div
+            className={`rounded-2xl p-4 text-xs leading-relaxed border ${
+              diagnostic.ok
+                ? 'bg-nirmie-50 border-nirmie-100 text-nirmie-800'
+                : 'bg-red-50 border-red-100 text-red-700'
+            }`}
+          >
+            <p className="font-bold mb-1">
+              {diagnostic.ok ? 'Clé fonctionnelle' : 'La clé ne fonctionne pas'}
+            </p>
+            <p>{diagnostic.message}</p>
+          </div>
+        )}
+
+        {aiError && (
+          <div className="bg-red-50 border border-red-100 rounded-2xl p-4 text-xs text-red-700 leading-relaxed">
+            <p className="font-bold mb-1">La préconisation a échoué</p>
+            <p>{aiError}</p>
+          </div>
+        )}
 
         {recommendation && (
           <div className="bg-purple-50 rounded-2xl p-4 space-y-3 animate-fade-in relative">

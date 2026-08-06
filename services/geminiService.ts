@@ -19,21 +19,40 @@ import {
   TravelMode,
 } from '../types';
 
-const ENRICH_MODEL = 'gemini-3-flash-preview';
-const SUGGEST_MODEL = 'gemini-3-flash-preview';
+/**
+ * Modèles souhaités, par ordre de préférence. Les identifiants Gemini changent
+ * souvent et tous ne sont pas ouverts à toutes les clés : cette liste n'est
+ * qu'un souhait, la disponibilité réelle est vérifiée auprès de Google.
+ */
+const PREFERRED_MODELS = [
+  'gemini-3-flash-preview',
+  'gemini-2.5-flash',
+  'gemini-flash-latest',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+];
+
+/** Variantes inadaptées à de la génération de texte structuré. */
+const UNSUITABLE = /embedding|aqa|image|vision|tts|audio|live|video|learnlm/i;
 
 /** Nombre de parcours enrichis par appel : au-delà les réponses se dégradent. */
 const BATCH_SIZE = 3;
 
 let client: GoogleGenAI | null = null;
+let resolvedModel: string | null = null;
 
-const getClient = (): GoogleGenAI => {
+const getApiKey = (): string => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === 'PLACEHOLDER_API_KEY') {
     throw new Error(
-      "Clé Gemini absente : renseignez GEMINI_API_KEY dans .env.local, ou désactivez l'enrichissement IA."
+      "Clé Gemini absente : renseignez GEMINI_API_KEY dans .env.local, puis redémarrez le serveur (Ctrl+C, npm run dev)."
     );
   }
+  return apiKey;
+};
+
+const getClient = (): GoogleGenAI => {
+  const apiKey = getApiKey();
   if (!client) client = new GoogleGenAI({ apiKey });
   return client;
 };
@@ -41,6 +60,112 @@ const getClient = (): GoogleGenAI => {
 export const hasApiKey = (): boolean => {
   const key = process.env.GEMINI_API_KEY;
   return Boolean(key) && key !== 'PLACEHOLDER_API_KEY';
+};
+
+// --------------------------------------------------------------------------
+// Choix du modèle
+// --------------------------------------------------------------------------
+
+/**
+ * Parmi les modèles réellement disponibles, retient le premier souhaité ;
+ * à défaut le premier « flash » exploitable, sinon n'importe lequel.
+ * Fonction pure, testée dans tests/planner.test.ts.
+ */
+export const pickModel = (available: string[]): string | null => {
+  const usable = available.filter((m) => !UNSUITABLE.test(m));
+  return (
+    PREFERRED_MODELS.find((m) => usable.includes(m)) ??
+    usable.find((m) => m.includes('flash')) ??
+    usable.find((m) => m.includes('pro')) ??
+    usable[0] ??
+    null
+  );
+};
+
+/** Interroge Google sur les modèles ouverts à cette clé. */
+const listAvailableModels = async (): Promise<string[]> => {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(
+      getApiKey()
+    )}`
+  );
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`HTTP ${response.status} ${body.slice(0, 200)}`);
+  }
+
+  const json = await response.json();
+  return (json.models || [])
+    .filter((m: any) => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map((m: any) => String(m.name).replace(/^models\//, ''));
+};
+
+/**
+ * Modèle à utiliser pour cette session, résolu une seule fois.
+ * On ne devine pas d'identifiant : on prend ce que la clé autorise vraiment.
+ */
+const resolveModel = async (): Promise<string> => {
+  if (resolvedModel) return resolvedModel;
+
+  const available = await listAvailableModels();
+  const picked = pickModel(available);
+  if (!picked) {
+    throw new Error(
+      "Cette clé n'ouvre l'accès à aucun modèle de génération de texte. Vérifiez-la sur aistudio.google.com/apikey."
+    );
+  }
+  resolvedModel = picked;
+  return picked;
+};
+
+/** Traduit les erreurs de l'API en messages exploitables. */
+export const describeApiError = (error: unknown): string => {
+  const raw = error instanceof Error ? error.message : String(error);
+
+  if (/API_KEY_INVALID|API key not valid|API key expired/i.test(raw)) {
+    return "Clé API refusée par Google. Vérifiez que vous avez copié la clé entière (elle commence par « AIza ») depuis aistudio.google.com/apikey.";
+  }
+  if (/PERMISSION_DENIED|\b403\b/.test(raw)) {
+    return "Accès refusé (403). La clé existe mais n'a pas les droits : vérifiez qu'aucune restriction n'y est appliquée, ou générez-en une nouvelle.";
+  }
+  if (/RESOURCE_EXHAUSTED|\b429\b|quota/i.test(raw)) {
+    return 'Quota Gemini dépassé pour le moment. Réessayez dans quelques minutes.';
+  }
+  if (/\b404\b|not found|NOT_FOUND/i.test(raw)) {
+    return "Modèle indisponible pour cette clé. L'application choisit normalement un modèle valide automatiquement — signalez cette erreur si elle persiste.";
+  }
+  if (/Failed to fetch|NetworkError|ERR_/i.test(raw)) {
+    return "Impossible de joindre l'API Google. Vérifiez votre connexion, et désactivez un éventuel bloqueur de publicités ou VPN sur cette page.";
+  }
+  return raw;
+};
+
+export interface ConnectionCheck {
+  ok: boolean;
+  message: string;
+}
+
+/** Test de bout en bout de la configuration, pour le bouton de diagnostic. */
+export const checkConnection = async (): Promise<ConnectionCheck> => {
+  try {
+    const model = await resolveModel();
+    const ai = getClient();
+    const response = await ai.models.generateContent({
+      model,
+      contents: 'Réponds exactement : OK',
+      config: { temperature: 0 },
+    });
+    const text = (response.text || '').trim();
+    return {
+      ok: true,
+      message: `Connexion établie avec le modèle ${model}${
+        text ? ` (réponse : « ${text.slice(0, 40)} »)` : ''
+      }.`,
+    };
+  } catch (error) {
+    return { ok: false, message: describeApiError(error) };
+  }
 };
 
 // --------------------------------------------------------------------------
@@ -94,6 +219,7 @@ const enrichBatch = async (
   offset: number
 ): Promise<GeneratedRoute[]> => {
   const ai = getClient();
+  const model = await resolveModel();
 
   const prompt = `Tu es guide-conférencier à ${city.name} (${city.displayName}).
 
@@ -112,7 +238,7 @@ Règles :
 - Écris en français, au présent, sans superlatif creux.`;
 
   const response = await ai.models.generateContent({
-    model: ENRICH_MODEL,
+    model,
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
@@ -222,6 +348,7 @@ export const recommendPlan = async (
   travelMode: TravelMode
 ): Promise<AiRecommendation> => {
   const ai = getClient();
+  const model = await resolveModel();
   const preset = MODE_PRESETS[travelMode];
 
   const byTheme = POI_THEMES.map(
@@ -255,7 +382,7 @@ Propose un plan de production : combien de parcours publier, avec quelles bornes
 Raisonne en éditeur d'application touristique : mieux vaut peu de parcours excellents que beaucoup de parcours dilués. Les lieux mineurs n'ont pas tous vocation à être utilisés. Justifie en 50 à 90 mots.`;
 
   const response = await ai.models.generateContent({
-    model: ENRICH_MODEL,
+    model,
     contents: prompt,
     config: {
       responseMimeType: 'application/json',
@@ -293,9 +420,10 @@ Raisonne en éditeur d'application touristique : mieux vaut peu de parcours exce
 
 export const explainPoi = async (city: CityInfo, poi: POI): Promise<string> => {
   const ai = getClient();
+  const model = await resolveModel();
 
   const response = await ai.models.generateContent({
-    model: ENRICH_MODEL,
+    model,
     contents: `Lieu : ${poi.name} (${poi.subtype}) à ${city.name} (${city.displayName}), coordonnées ${poi.lat.toFixed(4)}, ${poi.lng.toFixed(4)}.
 
 Explique ce lieu à un visiteur en 50 à 80 mots : ce que c'est, ce qu'on y voit, et si tu le sais avec certitude, un élément d'histoire. Si tu ne connais pas ce lieu précis, décris honnêtement ce que son type et son quartier laissent attendre, sans inventer de dates ni de faits. Français, ton direct, pas de superlatifs creux.`,
@@ -345,13 +473,14 @@ export const suggestMissingPOIs = async (
   limit = 10
 ): Promise<POI[]> => {
   const ai = getClient();
+  const model = await resolveModel();
   const known = existing
     .slice(0, 60)
     .map((p) => p.name)
     .join(', ');
 
   const response = await ai.models.generateContent({
-    model: SUGGEST_MODEL,
+    model,
     contents: `Ville : ${city.name} (${city.displayName}), centre approximatif ${city.lat.toFixed(4)}, ${city.lng.toFixed(4)}.
 
 Lieux touristiques déjà répertoriés : ${known || 'aucun'}.

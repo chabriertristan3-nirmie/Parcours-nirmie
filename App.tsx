@@ -26,6 +26,7 @@ import { ResultsView } from './components/ResultsView';
 import { clearScanCache, dedupePois, scanCity } from './services/osmService';
 import { applyFilters, computeCapacity, planRoutes } from './services/routePlanner';
 import {
+  describeApiError,
   enrichRoutes,
   hasApiKey,
   recommendPlan,
@@ -142,7 +143,7 @@ const App: React.FC = () => {
         return next;
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Le complément IA a échoué.');
+      setError(describeApiError(err));
     } finally {
       setAiLoading(false);
     }
@@ -214,9 +215,9 @@ const App: React.FC = () => {
         }
       } catch (err) {
         notices.push(
-          `Enrichissement IA indisponible (${
-            err instanceof Error ? err.message : 'erreur'
-          }). Les parcours sont générés sans textes.`
+          `Enrichissement IA indisponible : ${describeApiError(
+            err
+          )} Les parcours sont générés sans textes.`
         );
       }
     }
@@ -237,16 +238,17 @@ const App: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [scan, pool, config, aiAvailable]);
 
-  /** Préconisation IA depuis l'écran de réglages. */
+  /**
+   * Préconisation IA depuis l'écran de réglages. L'erreur est renvoyée au
+   * panneau plutôt qu'au bandeau global : elle s'affiche là où l'utilisateur
+   * vient de cliquer.
+   */
   const handleRecommend = useCallback(async () => {
-    if (!scan) return null;
+    if (!scan) return { error: "Aucune ville chargée." };
     try {
-      return await recommendPlan(scan, pool, config.travelMode);
+      return { recommendation: await recommendPlan(scan, pool, config.travelMode) };
     } catch (err) {
-      setError(
-        `La préconisation IA a échoué (${err instanceof Error ? err.message : 'erreur'}).`
-      );
-      return null;
+      return { error: describeApiError(err) };
     }
   }, [scan, pool, config.travelMode]);
 

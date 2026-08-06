@@ -1,6 +1,7 @@
 import { computeCapacity, planRoutes, applyFilters } from '../services/routePlanner';
 import { pathLengthM, haversineM } from '../services/geo';
 import { safetyExclusion } from '../services/osmService';
+import { pickModel, describeApiError } from '../services/geminiService';
 import { DEFAULT_ROUTE_CONFIG, POI, POI_THEMES, PoiTheme, RouteConfig } from '../types';
 
 let failures = 0;
@@ -191,6 +192,42 @@ console.log('\n== Règles de sécurité ==');
   ];
   allowed.forEach(([label, tags]) => {
     check(`admis : ${label}`, safetyExclusion(tags) === null, safetyExclusion(tags) || '');
+  });
+}
+
+console.log('\n== Choix du modèle Gemini ==');
+{
+  // Cas réel : la clé n'ouvre pas le modèle de l'export AI Studio.
+  const sansGemini3 = ['gemini-2.5-flash', 'gemini-2.5-pro', 'text-embedding-004'];
+  check('retombe sur un modèle disponible', pickModel(sansGemini3) === 'gemini-2.5-flash',
+    String(pickModel(sansGemini3)));
+
+  const avecGemini3 = ['gemini-2.5-flash', 'gemini-3-flash-preview'];
+  check('préfère le modèle souhaité quand il existe',
+    pickModel(avecGemini3) === 'gemini-3-flash-preview', String(pickModel(avecGemini3)));
+
+  const inconnus = ['gemini-9-turbo', 'gemini-9-pro'];
+  check('modèles inconnus : prend un pro plutôt que rien',
+    pickModel(inconnus) === 'gemini-9-pro', String(pickModel(inconnus)));
+
+  check('ignore les modèles inadaptés',
+    pickModel(['text-embedding-004', 'imagen-3.0', 'gemini-tts']) === null,
+    String(pickModel(['text-embedding-004', 'imagen-3.0', 'gemini-tts'])));
+
+  check('liste vide => aucun modèle', pickModel([]) === null);
+}
+
+console.log('\n== Messages d\'erreur API ==');
+{
+  const cases: [string, string, RegExp][] = [
+    ['clé invalide', 'API key not valid. Please pass a valid API key.', /clé entière/i],
+    ['403', 'PERMISSION_DENIED: the caller does not have permission', /Accès refusé/i],
+    ['quota', 'RESOURCE_EXHAUSTED: quota exceeded', /Quota/i],
+    ['réseau', 'Failed to fetch', /joindre l'API Google/i],
+  ];
+  cases.forEach(([label, raw, expected]) => {
+    const msg = describeApiError(new Error(raw));
+    check(`erreur ${label} traduite`, expected.test(msg), msg.slice(0, 60));
   });
 }
 
