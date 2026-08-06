@@ -220,9 +220,17 @@ export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved })
             <MapView
               pois={route.steps}
               drawPath
+              path={route.path}
               loop={route.summary.loop}
               className="w-full h-80"
             />
+
+            {route.geometrySource === 'straight' && (
+              <p className="px-4 pt-3 text-[10px] text-amber-700 bg-amber-50 mx-2 mt-2 rounded-lg py-2 leading-relaxed no-print">
+                Tracé en lignes droites : le service de calcul d'itinéraire n'a pas
+                répondu pour ce parcours. Les distances sont estimées.
+              </p>
+            )}
 
             <div className="p-4 space-y-3 no-print">
               <button

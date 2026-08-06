@@ -32,6 +32,7 @@ import {
   recommendPlan,
   suggestMissingPOIs,
 } from './services/geminiService';
+import { routeAll } from './services/routingService';
 import { exportPackToSupabase, isSupabaseConfigured } from './services/supabaseService';
 import { downloadPackJson } from './services/exporters';
 
@@ -192,6 +193,19 @@ const App: React.FC = () => {
     // On accumule les remarques : une génération partiellement dégradée reste
     // une génération réussie, mais l'utilisateur doit savoir ce qui manque.
     const notices: string[] = [];
+
+    if (config.followStreets) {
+      setProgress(`Calcul des tracés par les rues (0/${planned.length})…`);
+      const { routes: routed, failures } = await routeAll(planned, config, (done, total) =>
+        setProgress(`Calcul des tracés par les rues (${done}/${total})…`)
+      );
+      planned = routed;
+      if (failures > 0) {
+        notices.push(
+          `${failures} parcours sur ${planned.length} n'ont pas de tracé détaillé : le service d'itinéraires n'a pas répondu. Ils restent en lignes droites, avec des distances estimées.`
+        );
+      }
+    }
 
     if (config.routeCount !== null && planned.length < config.routeCount) {
       notices.push(

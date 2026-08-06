@@ -9,6 +9,7 @@
 import {
   Capacity,
   GeneratedRoute,
+  PathPoint,
   POI,
   PoiFilters,
   PoiTheme,
@@ -17,6 +18,7 @@ import {
   POI_THEMES,
 } from '../types';
 import { centroid, distanceToNearestM, haversineM, orderStops, pathLengthM } from './geo';
+import { straightPath } from './routingService';
 
 /** Nombre de parcours dans lesquels un même POI peut apparaître. */
 const maxUsagePerPoi = (config: RouteConfig) => (config.reusePois ? 2 : 1);
@@ -186,12 +188,25 @@ export const buildRoute = (
 ): GeneratedRoute => {
   const ordered = orderStops(stops, config.loop);
 
-  const steps: RouteStep[] = ordered.map((poi, i) => ({
-    ...poi,
-    stepNumber: i + 1,
-    distanceFromPrevM:
-      i === 0 ? 0 : Math.round(pathLengthM([ordered[i - 1], poi], false)),
-  }));
+  // Estimations à vol d'oiseau corrigé. Si le routage par les rues est activé,
+  // routingService remplacera ensuite ces valeurs par les distances réelles.
+  const steps: RouteStep[] = ordered.map((poi, i) => {
+    const distanceFromPrevM =
+      i === 0 ? 0 : Math.round(pathLengthM([ordered[i - 1], poi], false));
+    return {
+      ...poi,
+      stepNumber: i + 1,
+      distanceFromPrevM,
+      durationFromPrevS: Math.round((distanceFromPrevM / 1000 / config.paceKmh) * 3600),
+      pathFromPrev:
+        i === 0
+          ? []
+          : ([
+              [ordered[i - 1].lat, ordered[i - 1].lng],
+              [poi.lat, poi.lng],
+            ] as PathPoint[]),
+    };
+  });
 
   const totalM = pathLengthM(ordered, config.loop);
   const walkingMinutes = (totalM / 1000 / config.paceKmh) * 60;
@@ -213,6 +228,8 @@ export const buildRoute = (
       loop: config.loop,
     },
     steps,
+    path: straightPath(ordered, config.loop),
+    geometrySource: 'straight',
   };
 };
 

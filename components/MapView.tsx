@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { POI, THEME_COLORS, PoiTheme } from '../types';
+import { PathPoint, POI, THEME_COLORS, PoiTheme } from '../types';
 
 declare global {
   interface Window {
@@ -9,8 +9,12 @@ declare global {
 
 interface Props {
   pois: POI[];
-  /** Trace une ligne entre les points, dans l'ordre du tableau. */
+  /** Numérote les marqueurs et relie les points. */
   drawPath?: boolean;
+  /**
+   * Tracé réel à dessiner. Absent, les points sont reliés en ligne droite.
+   */
+  path?: PathPoint[];
   loop?: boolean;
   /** POI mis en avant (survol dans la liste). */
   highlightId?: string | null;
@@ -39,6 +43,7 @@ const markerHtml = (poi: POI, index: number | null, highlighted: boolean) => {
 export const MapView: React.FC<Props> = ({
   pois,
   drawPath = false,
+  path,
   loop = false,
   highlightId = null,
   className = '',
@@ -101,15 +106,26 @@ export const MapView: React.FC<Props> = ({
       if (onSelect) marker.on('click', () => onSelect(poi));
     });
 
-    if (drawPath && points.length > 1) {
-      const line = points.map((p) => [p.lat, p.lng] as [number, number]);
+    // Le tracé réel suit les rues ; sans lui, on relie les arrêts en direct.
+    let line: [number, number][] = [];
+    if (path && path.length > 1) {
+      line = path.map((p) => [p[0], p[1]] as [number, number]);
+    } else if (drawPath && points.length > 1) {
+      line = points.map((p) => [p.lat, p.lng] as [number, number]);
       if (loop) line.push(line[0]);
-      window.L.polyline(line, { color: '#10b981', weight: 4, opacity: 0.85 }).addTo(layer);
     }
 
-    const bounds = window.L.latLngBounds(points.map((p) => [p.lat, p.lng]));
+    if (line.length > 1) {
+      // Un liseré blanc sous le tracé le garde lisible sur fond de carte chargé.
+      window.L.polyline(line, { color: '#ffffff', weight: 7, opacity: 0.9 }).addTo(layer);
+      window.L.polyline(line, { color: '#10b981', weight: 4, opacity: 1 }).addTo(layer);
+    }
+
+    const bounds = window.L.latLngBounds(
+      line.length > 1 ? line : points.map((p) => [p.lat, p.lng])
+    );
     map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
-  }, [pois, drawPath, loop, highlightId, onSelect]);
+  }, [pois, drawPath, path, loop, highlightId, onSelect]);
 
   // Recentrage sur le POI survolé, sans changer le niveau de zoom
   useEffect(() => {

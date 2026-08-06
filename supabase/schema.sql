@@ -20,6 +20,10 @@ create table if not exists public.generator_routes (
   theme           text,
   travel_mode     text not null default 'walk' check (travel_mode in ('walk', 'bike')),
   intro           text,
+  -- Tracé complet [[lat, lng], ...] suivant rues et chemins : c'est lui que
+  -- le mode live de l'application affiche.
+  path            jsonb,
+  geometry_source text,
   distance_km     numeric,
   walking_minutes integer,
   visit_minutes   integer,
@@ -43,6 +47,9 @@ create table if not exists public.generator_steps (
   notoriety            integer,
   visit_minutes        integer,
   distance_from_prev_m integer,
+  duration_from_prev_s integer,
+  -- Tracé depuis l'étape précédente, pour guider segment par segment.
+  path_from_prev       jsonb,
   description          text,
   anecdote             text,
   wikidata             text,

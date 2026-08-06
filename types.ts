@@ -119,6 +119,11 @@ export interface RouteConfig {
   paceKmh: number;
   /** Écrit les descriptions et anecdotes avec Gemini. */
   enrichWithAI: boolean;
+  /**
+   * Calcule le tracé réel par les rues et chemins (OpenStreetMap).
+   * Désactivé, les parcours restent en lignes droites entre les arrêts.
+   */
+  followStreets: boolean;
 }
 
 export const DEFAULT_ROUTE_CONFIG: RouteConfig = {
@@ -133,6 +138,7 @@ export const DEFAULT_ROUTE_CONFIG: RouteConfig = {
   routeCount: null,
   paceKmh: 4.2,
   enrichWithAI: true,
+  followStreets: true,
 };
 
 /** Réglages raisonnables propres à chaque mode de déplacement. */
@@ -186,10 +192,33 @@ export interface AiRecommendation {
   rationale: string;
 }
 
+/**
+ * Point d'un tracé, sous la forme `[latitude, longitude]`.
+ *
+ * Attention : GeoJSON utilise l'ordre inverse. L'export JSON fournit aussi un
+ * bloc `geojson` en ordre standard `[longitude, latitude]` pour les outils qui
+ * l'attendent.
+ */
+export type PathPoint = [number, number];
+
+/** D'où vient le tracé affiché et exporté. */
+export type GeometrySource =
+  /** Itinéraire réel suivant rues et chemins. */
+  | 'osrm'
+  /** Repli : ligne droite entre les arrêts, le routage ayant échoué. */
+  | 'straight';
+
 export interface RouteStep extends POI {
   stepNumber: number;
-  /** Distance de marche estimée depuis l'étape précédente, en mètres. */
+  /** Distance depuis l'étape précédente, en mètres (0 pour la première). */
   distanceFromPrevM: number;
+  /** Temps de trajet depuis l'étape précédente, en secondes. */
+  durationFromPrevS: number;
+  /**
+   * Tracé depuis l'étape précédente, prêt à être dessiné ou suivi en direct.
+   * Vide pour la première étape.
+   */
+  pathFromPrev: PathPoint[];
 }
 
 export interface RouteSummary {
@@ -213,6 +242,10 @@ export interface GeneratedRoute {
   createdAt: string;
   summary: RouteSummary;
   steps: RouteStep[];
+  /** Tracé complet, de la première à la dernière étape (boucle comprise). */
+  path: PathPoint[];
+  /** `osrm` = tracé réel par les rues, `straight` = lignes droites de secours. */
+  geometrySource: GeometrySource;
 }
 
 /** Ce que la ville permet de produire, compte tenu des filtres et des réglages. */

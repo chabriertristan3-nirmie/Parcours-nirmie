@@ -61,6 +61,9 @@ const routeRow = (route: GeneratedRoute, packId: string) => ({
   theme: route.summary.theme,
   travel_mode: route.summary.travelMode ?? 'walk',
   intro: route.summary.intro ?? null,
+  // Tracé complet, pour le mode live de l'application Nirmie.
+  path: route.path,
+  geometry_source: route.geometrySource,
   distance_km: route.summary.totalDistanceKm,
   walking_minutes: route.summary.walkingMinutes,
   visit_minutes: route.summary.visitMinutes,
@@ -87,6 +90,8 @@ const stepRows = (route: GeneratedRoute) =>
     notoriety: step.notoriety,
     visit_minutes: step.visitMinutes,
     distance_from_prev_m: step.distanceFromPrevM,
+    duration_from_prev_s: step.durationFromPrevS,
+    path_from_prev: step.pathFromPrev,
     description: step.description ?? null,
     anecdote: step.anecdote ?? null,
     wikidata: step.wikidata ?? null,

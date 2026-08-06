@@ -34,7 +34,8 @@ Passez le minimum à 6 : elle en porte 10. C'est le terrain qui décide.
 | Trouver les lieux | OpenStreetMap (Overpass) | Données réelles, exhaustives, coordonnées exactes |
 | Classer et noter les lieux | `services/osmService.ts` | Règles explicites sur les tags OSM |
 | Composer et ordonner les parcours | `services/routePlanner.ts` | Déterministe : mêmes réglages, même résultat |
-| Calculer distances et durées | `services/geo.ts` | Haversine + facteur de voirie, jamais estimé au jugé |
+| Tracer l'itinéraire par les rues | OSRM (`services/routingService.ts`) | Chemin réellement praticable, distances exactes |
+| Calculer les durées | `services/geo.ts` | Distance réelle ÷ vitesse choisie, jamais estimé au jugé |
 | Rédiger les textes | Gemini | C'est son seul rôle |
 
 L'IA ne choisit plus les lieux, ne compte plus les étapes et n'invente plus de
@@ -82,6 +83,59 @@ Le bouton livre (📖) de chaque lieu de l'inventaire affiche une explication :
 en priorité le résumé **Wikipédia** (via les tags `wikipedia`/`wikidata`
 d'OSM, avec lien vers la fiche), sinon la description **Wikidata**, et en
 dernier recours un texte **rédigé par l'IA**, clairement signalé comme tel.
+
+## Tracé réel et mode live
+
+Les parcours ne relient pas les arrêts en ligne droite : le tracé suit les rues
+et les chemins, calculé par les serveurs OSRM de la communauté OpenStreetMap
+(profil piéton ou vélo selon le mode, sans clé d'API). Les distances et durées
+affichées sont alors les vraies distances de trajet, plus des estimations.
+
+Le réglage **« Tracé par les rues »** permet de le désactiver. Si le service ne
+répond pas, le parcours reste produit en lignes droites et le signale
+explicitement, sur la carte comme dans les données (`geometrySource`).
+
+### Ce que contient le JSON
+
+```jsonc
+{
+  "id": "route-...",
+  "summary": { "title": "...", "totalDistanceKm": 3.2, "walkingMinutes": 46, "travelMode": "walk" },
+
+  // Tracé complet du parcours, en [latitude, longitude].
+  // C'est cette liste que le mode live affiche et suit.
+  "path": [[45.8992, 6.1294], [45.8994, 6.1301], ...],
+
+  // "osrm" = tracé réel par les rues, "straight" = lignes droites de secours.
+  "geometrySource": "osrm",
+
+  "steps": [
+    {
+      "stepNumber": 2,
+      "name": "Palais de l'Isle",
+      "lat": 45.8989, "lng": 6.1281,
+      "distanceFromPrevM": 320,        // distance réelle depuis l'étape précédente
+      "durationFromPrevS": 274,        // à la vitesse choisie
+      "pathFromPrev": [[...], [...]]   // tracé de ce segment seul
+    }
+  ],
+
+  // Ajouté à l'export : géométrie GeoJSON standard, en [longitude, latitude].
+  "geojson": { "type": "Feature", "geometry": { "type": "LineString", "coordinates": [...] } }
+}
+```
+
+**Attention à l'ordre des coordonnées.** `path` et `pathFromPrev` sont en
+`[latitude, longitude]` — la convention de Leaflet, et celle du reste de
+l'application. Le bloc `geojson` est en `[longitude, latitude]`, l'ordre
+standard qu'attendent Mapbox, MapLibre et la plupart des SDK mobiles. Prenez
+celui qui correspond à votre carte.
+
+`pathFromPrev` permet de guider segment par segment : afficher uniquement le
+tronçon vers la prochaine étape, et basculer sur le suivant à l'arrivée.
+
+L'export GPX contient également le tracé complet, exploitable dans un GPS ou
+une montre de sport.
 
 ## Export vers Supabase
 

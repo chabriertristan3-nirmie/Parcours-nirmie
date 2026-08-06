@@ -9,6 +9,7 @@ import {
   ListOrdered,
   Loader2,
   Repeat,
+  Route,
   Ruler,
   Shuffle,
   Sparkles,
@@ -583,6 +584,13 @@ export const RouteConfigPanel: React.FC<Props> = ({
               icon={<Footprints className="w-4 h-4" />}
               title="Réutiliser les lieux"
               subtitle="Un lieu peut servir dans 2 parcours — double la capacité"
+            />
+            <Toggle
+              active={config.followStreets}
+              onToggle={() => onChange({ followStreets: !config.followStreets })}
+              icon={<Route className="w-4 h-4" />}
+              title="Tracé par les rues"
+              subtitle="Suit rues et chemins, et donne les distances réelles"
             />
             <Toggle
               active={config.enrichWithAI && aiAvailable}

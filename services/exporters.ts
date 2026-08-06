@@ -37,17 +37,41 @@ const escapeXml = (value: string) =>
 
 const csvCell = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
+/**
+ * Ajoute au parcours une géométrie GeoJSON standard, en ordre
+ * `[longitude, latitude]` — ce qu'attendent Mapbox, MapLibre, Google Maps et
+ * la plupart des SDK mobiles. Les champs `path` et `pathFromPrev` restent en
+ * `[latitude, longitude]`, la convention interne de l'application.
+ */
+const withGeoJson = (route: GeneratedRoute) => ({
+  ...route,
+  geojson: {
+    type: 'Feature' as const,
+    properties: {
+      title: route.summary.title,
+      city: route.summary.city,
+      travelMode: route.summary.travelMode ?? 'walk',
+      distanceKm: route.summary.totalDistanceKm,
+      geometrySource: route.geometrySource,
+    },
+    geometry: {
+      type: 'LineString' as const,
+      coordinates: route.path.map(([lat, lng]) => [lng, lat]),
+    },
+  },
+});
+
 export const downloadRouteJson = (route: GeneratedRoute) =>
   download(
     `${slugify(route.summary.title)}.json`,
-    JSON.stringify(route, null, 2),
+    JSON.stringify(withGeoJson(route), null, 2),
     'application/json'
   );
 
 export const downloadPackJson = (pack: SavedPack) =>
   download(
     `pack-${slugify(pack.cityName)}.json`,
-    JSON.stringify(pack, null, 2),
+    JSON.stringify({ ...pack, routes: pack.routes.map(withGeoJson) }, null, 2),
     'application/json'
   );
 
@@ -108,8 +132,10 @@ export const downloadRouteGpx = (route: GeneratedRoute) => {
     )
     .join('\n');
 
-  const track = route.steps
-    .map((step) => `      <trkpt lat="${step.lat}" lon="${step.lng}"></trkpt>`)
+  // Le tracé complet (rues et chemins) plutôt que les seuls arrêts : c'est ce
+  // qui rend le fichier exploitable dans un GPS ou une montre.
+  const track = route.path
+    .map(([lat, lng]) => `      <trkpt lat="${lat}" lon="${lng}"></trkpt>`)
     .join('\n');
 
   const gpx = `<?xml version="1.0" encoding="UTF-8"?>

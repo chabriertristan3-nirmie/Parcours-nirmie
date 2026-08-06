@@ -2,6 +2,7 @@ import { computeCapacity, planRoutes, applyFilters } from '../services/routePlan
 import { pathLengthM, haversineM } from '../services/geo';
 import { safetyExclusion } from '../services/osmService';
 import { pickModel, describeApiError } from '../services/geminiService';
+import { applyRoutedPath, straightPath } from '../services/routingService';
 import { DEFAULT_ROUTE_CONFIG, POI, POI_THEMES, PoiTheme, RouteConfig } from '../types';
 
 let failures = 0;
@@ -229,6 +230,83 @@ console.log('\n== Messages d\'erreur API ==');
     const msg = describeApiError(new Error(raw));
     check(`erreur ${label} traduite`, expected.test(msg), msg.slice(0, 60));
   });
+}
+
+console.log('\n== Tracé par les rues ==');
+{
+  const pois = makeCity(6, 21);
+  const config = cfg({ stopsMin: 4, stopsTarget: 5, stopsMax: 5, maxDistanceKm: null });
+  const route = planRoutes(pois, 'Testville', config)[0];
+
+  check('sans routage : géométrie en lignes droites', route.geometrySource === 'straight');
+  check('sans routage : un point de tracé par arrêt',
+    route.path.length === route.steps.length, `${route.path.length}`);
+  check('chaque étape sauf la première porte un segment',
+    route.steps.slice(1).every(s => s.pathFromPrev.length === 2) &&
+    route.steps[0].pathFromPrev.length === 0);
+
+  // Réponse OSRM simulée : chaque segment fait un détour, donc plus long que
+  // la ligne droite. Les extrémités des segments se recouvrent, comme en vrai.
+  const legs = route.steps.slice(1).map((step, i) => {
+    const from = route.steps[i];
+    const midpoint: [number, number] = [
+      (from.lat + step.lat) / 2 + 0.0008,
+      (from.lng + step.lng) / 2,
+    ];
+    // Un vrai détour par les rues : 40 % de plus que la ligne droite.
+    return {
+      distanceM: Math.round(haversineM(from, step) * 1.4),
+      durationS: 400,
+      path: [[from.lat, from.lng], midpoint, [step.lat, step.lng]] as [number, number][],
+    };
+  });
+  const totalDistanceM = legs.reduce((sum, l) => sum + l.distanceM, 0);
+  const routed = applyRoutedPath(route, { legs, totalDistanceM }, config);
+
+  check('après routage : géométrie marquée comme réelle', routed.geometrySource === 'osrm');
+  check('distances réelles reprises des segments',
+    routed.steps.slice(1).every((s, i) => s.distanceFromPrevM === legs[i].distanceM));
+  check('première étape sans distance ni tracé',
+    routed.steps[0].distanceFromPrevM === 0 && routed.steps[0].pathFromPrev.length === 0);
+  check('distance totale = somme des segments',
+    Math.abs(routed.summary.totalDistanceKm - totalDistanceM / 1000) < 0.05,
+    `${routed.summary.totalDistanceKm} km`);
+
+  // 3 points par segment, moins les jonctions partagées entre segments.
+  const expectedPoints = legs.length * 3 - (legs.length - 1);
+  check('tracé assemblé sans point de jonction dupliqué',
+    routed.path.length === expectedPoints, `${routed.path.length} vs ${expectedPoints}`);
+
+  const consecutiveDupes = routed.path.filter(
+    (p, i) => i > 0 && p[0] === routed.path[i - 1][0] && p[1] === routed.path[i - 1][1]
+  );
+  check('aucun point répété dans le tracé', consecutiveDupes.length === 0);
+
+  check('durée recalculée à la vitesse choisie',
+    routed.summary.walkingMinutes ===
+      Math.round((totalDistanceM / 1000 / config.paceKmh) * 60),
+    `${routed.summary.walkingMinutes} min`);
+  check('durée totale cohérente',
+    routed.summary.totalMinutes ===
+      routed.summary.walkingMinutes + routed.summary.visitMinutes);
+
+  // Le tracé réel doit être plus long que la ligne droite : c'est le détour.
+  check('tracé réel plus long que la ligne droite',
+    totalDistanceM > pathLengthM(route.steps, false),
+    `${Math.round(totalDistanceM)} m vs ${Math.round(pathLengthM(route.steps, false))} m`);
+}
+
+console.log('\n== Tracé de secours ==');
+{
+  const pois = makeCity(4, 33);
+  const line = straightPath(pois, false);
+  check('ligne droite : un point par arrêt', line.length === 4, `${line.length}`);
+  check('ordre [lat, lng] respecté',
+    line[0][0] === pois[0].lat && line[0][1] === pois[0].lng);
+
+  const loop = straightPath(pois, true);
+  check('boucle : le tracé revient au départ',
+    loop.length === 5 && loop[4][0] === loop[0][0] && loop[4][1] === loop[0][1]);
 }
 
 console.log(failures === 0 ? '\nTous les tests passent.\n' : `\n${failures} test(s) en échec.\n`);
