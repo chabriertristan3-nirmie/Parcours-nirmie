@@ -167,9 +167,17 @@ export const RouteSelection: React.FC<Props> = ({
                 )}
                 {route.summary.totalDistanceKm} km
               </span>
-              <span className="flex items-center gap-1">
+              <span
+                className="flex items-center gap-1"
+                title={`${formatDuration(route.summary.walkingMinutes)} d'effort + ${formatDuration(
+                  route.summary.visitMinutes
+                )} de visites = ${formatDuration(route.summary.totalMinutes)} au total`}
+              >
                 <Clock className="w-3 h-3 text-nirmie-500" />
-                {formatDuration(route.summary.totalMinutes)}
+                {formatDuration(route.summary.walkingMinutes)}
+                <span className="text-gray-300 font-normal">
+                  +{formatDuration(route.summary.visitMinutes)} visites
+                </span>
               </span>
               {route.summary.loop && (
                 <span className="flex items-center gap-1 text-nirmie-600">

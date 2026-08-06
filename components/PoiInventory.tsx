@@ -214,6 +214,10 @@ export const PoiInventory: React.FC<Props> = ({
         </div>
 
         {/* Répartition par thème — cliquable pour filtrer */}
+        <p className="text-[10px] text-gray-400 -mb-3">
+          Cliquez sur un thème pour ne voir que ses lieux (liste et carte) ; recliquez pour
+          l'enlever. Plusieurs thèmes peuvent être actifs en même temps.
+        </p>
         <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
           {POI_THEMES.map((theme) => {
             const count = countByTheme[theme];
@@ -320,12 +324,14 @@ export const PoiInventory: React.FC<Props> = ({
             <div className="flex flex-wrap gap-2 pt-1">
               <button
                 onClick={selectAllVisible}
+                title="Coche tous les lieux actuellement affichés : ils seront utilisables pour les parcours."
                 className="px-3 py-1.5 rounded-lg bg-nirmie-50 text-nirmie-700 text-[11px] font-bold hover:bg-nirmie-100 transition-colors"
               >
                 Tout retenir ({visible.length})
               </button>
               <button
                 onClick={deselectAllVisible}
+                title="Décoche tous les lieux affichés : ils resteront dans l'inventaire mais ne serviront pas aux parcours."
                 className="px-3 py-1.5 rounded-lg bg-gray-50 text-gray-500 text-[11px] font-bold hover:bg-gray-100 transition-colors"
               >
                 Tout écarter
@@ -335,6 +341,7 @@ export const PoiInventory: React.FC<Props> = ({
                   key={n}
                   onClick={() => keepTop(n)}
                   disabled={scan.pois.length <= n}
+                  title={`Ne retient que les ${n} lieux les plus connus de la ville, tout le reste est écarté.`}
                   className="px-3 py-1.5 rounded-lg bg-amber-50 text-amber-700 text-[11px] font-bold hover:bg-amber-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Top {n}
@@ -342,6 +349,7 @@ export const PoiInventory: React.FC<Props> = ({
               ))}
               <button
                 onClick={onRescan}
+                title="Relance un relevé complet depuis OpenStreetMap, en ignorant le cache."
                 className="px-3 py-1.5 rounded-lg bg-gray-50 text-gray-500 text-[11px] font-bold hover:bg-gray-100 transition-colors flex items-center gap-1.5 ml-auto"
               >
                 <RefreshCw className="w-3 h-3" /> Rescanner
@@ -351,14 +359,20 @@ export const PoiInventory: React.FC<Props> = ({
 
           {/* Liste des POI */}
           <div className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between bg-gray-50/60">
-              <span className="text-xs font-black text-gray-500 uppercase tracking-widest">
-                {visible.length} lieu{visible.length > 1 ? 'x' : ''} affiché
-                {visible.length > 1 ? 's' : ''}
-              </span>
-              <span className="text-xs font-bold text-nirmie-600">
-                {selectedVisible.length} retenu{selectedVisible.length > 1 ? 's' : ''}
-              </span>
+            <div className="px-5 py-3 border-b border-gray-100 bg-gray-50/60">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black text-gray-500 uppercase tracking-widest">
+                  {visible.length} lieu{visible.length > 1 ? 'x' : ''} affiché
+                  {visible.length > 1 ? 's' : ''}
+                </span>
+                <span className="text-xs font-bold text-nirmie-600">
+                  {selectedVisible.length} retenu{selectedVisible.length > 1 ? 's' : ''}
+                </span>
+              </div>
+              <p className="text-[10px] text-gray-400 mt-1">
+                Un lieu coché est « retenu » : il pourra être placé dans un parcours. Cliquez
+                sur une ligne pour cocher ou décocher, sur le livre pour l'explication du lieu.
+              </p>
             </div>
 
             <div className="max-h-[560px] overflow-y-auto divide-y divide-gray-50">

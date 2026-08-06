@@ -99,7 +99,8 @@ export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved })
               <ModeIcon className="w-4 h-4" /> {route.summary.totalDistanceKm} km
             </span>
             <span className="flex items-center gap-2">
-              <Clock className="w-4 h-4" /> {formatDuration(route.summary.totalMinutes)}
+              <Clock className="w-4 h-4" /> {formatDuration(route.summary.walkingMinutes)} de{' '}
+              {isBike ? 'vélo' : 'marche'}
             </span>
             {route.summary.loop && (
               <span className="flex items-center gap-2">
@@ -108,8 +109,8 @@ export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved })
             )}
           </div>
           <p className="text-[11px] text-white/70 mt-2">
-            {formatDuration(route.summary.walkingMinutes)} de {isBike ? 'vélo' : 'marche'} +{' '}
-            {formatDuration(route.summary.visitMinutes)} de visite
+            + {formatDuration(route.summary.visitMinutes)} de visites, soit{' '}
+            {formatDuration(route.summary.totalMinutes)} en comptant les arrêts
           </p>
         </div>
       </div>
@@ -119,7 +120,8 @@ export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved })
         <h1 className="text-2xl font-bold">{route.summary.title}</h1>
         <p className="text-sm">
           {route.summary.city} • {route.summary.stopsCount} arrêts •{' '}
-          {route.summary.totalDistanceKm} km • {formatDuration(route.summary.totalMinutes)}
+          {route.summary.totalDistanceKm} km • {formatDuration(route.summary.walkingMinutes)} de{' '}
+          {isBike ? 'vélo' : 'marche'} (+{formatDuration(route.summary.visitMinutes)} de visites)
         </p>
       </div>
 

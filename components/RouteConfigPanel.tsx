@@ -115,12 +115,13 @@ export const RouteConfigPanel: React.FC<Props> = ({
   const impossible = capacity.maxRoutes === 0;
 
   // Estimation moyenne, à titre indicatif — les vraies valeurs sont calculées
-  // parcours par parcours à la génération.
+  // parcours par parcours à la génération. L'effort (marche ou vélo) est la
+  // donnée principale ; les visites s'affichent à part.
   const avgVisit =
     pool.reduce((sum, p) => sum + p.visitMinutes, 0) / Math.max(1, pool.length);
-  const estimatedMinutes =
-    config.stopsTarget * avgVisit +
+  const estimatedEffortMinutes =
     (((config.maxDistanceKm ?? preset.defaultDistanceKm) * 0.75) / config.paceKmh) * 60;
+  const estimatedVisitMinutes = config.stopsTarget * avgVisit;
 
   const switchMode = (mode: TravelMode) => {
     if (mode === config.travelMode) return;
@@ -262,7 +263,9 @@ export const RouteConfigPanel: React.FC<Props> = ({
               (confortable)
             </p>
             <p className="text-nirmie-100/80 text-xs">
-              soit ~{formatDuration(estimatedMinutes)} et jusqu'à{' '}
+              soit ~{formatDuration(estimatedEffortMinutes)} de{' '}
+              {config.travelMode === 'bike' ? 'vélo' : 'marche'} (+ ~
+              {formatDuration(estimatedVisitMinutes)} de visites) et jusqu'à{' '}
               {config.maxDistanceKm ? `${config.maxDistanceKm} km` : 'distance libre'} par parcours
             </p>
           </div>
@@ -346,14 +349,32 @@ export const RouteConfigPanel: React.FC<Props> = ({
             title="Arrêts par parcours"
             hint="Le minimum décide de la capacité maximale, la cible du confort de visite."
           >
-            <div className="space-y-4">
+            <div className="space-y-5">
               {(
                 [
-                  ['stopsMin', 'Minimum', 2, 12],
-                  ['stopsTarget', 'Cible', 2, 15],
-                  ['stopsMax', 'Maximum', 3, 20],
+                  [
+                    'stopsMin',
+                    'Minimum',
+                    2,
+                    12,
+                    "En dessous de ce nombre d'arrêts, un parcours n'est pas créé. C'est ce chiffre qui fixe le nombre maximal de parcours : plus il est bas, plus la ville en produit.",
+                  ],
+                  [
+                    'stopsTarget',
+                    'Cible',
+                    2,
+                    15,
+                    "La taille idéale d'un parcours. Le générateur vise ce nombre d'arrêts quand le quartier est assez fourni — c'est ce qui rend les parcours réguliers entre eux.",
+                  ],
+                  [
+                    'stopsMax',
+                    'Maximum',
+                    3,
+                    20,
+                    "Plafond absolu : un parcours ne dépasse jamais ce nombre d'arrêts, même si d'autres lieux restent à proximité.",
+                  ],
                 ] as const
-              ).map(([key, label, min, max]) => (
+              ).map(([key, label, min, max, help]) => (
                 <div key={key} className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-gray-500">{label}</span>
@@ -367,6 +388,7 @@ export const RouteConfigPanel: React.FC<Props> = ({
                     onChange={(e) => setStops(key, Number(e.target.value))}
                     className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-nirmie-500"
                   />
+                  <p className="text-[10px] text-gray-400 leading-relaxed">{help}</p>
                 </div>
               ))}
             </div>
