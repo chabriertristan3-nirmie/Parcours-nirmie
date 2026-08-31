@@ -45,8 +45,32 @@ Les boucles d'un même lot sont réparties dans des secteurs distincts, avec une
 part de hasard : elles partent dans des directions différentes, et **relancer
 la génération avec les mêmes réglages donne d'autres circuits**.
 
-Le départ est le centre-ville par défaut, et peut être votre position ou une
-adresse.
+### Un départ par boucle, sur toute la commune
+
+Parties du même point, quatre boucles de 3,5 km se recouvrent : quelle que soit
+leur forme, elles tournent dans le même quartier. Le générateur détermine donc
+**un point de départ par boucle**, répartis sur l'ensemble du territoire
+communal — c'est ce qui les rend réellement différentes.
+
+Les départs sont posés sur l'**ellipse inscrite dans l'emprise de la commune**,
+à 55 % de sa demi-étendue : la forme de cette ellipse suit celle du territoire,
+qu'il soit ramassé ou tout en longueur. Chacun est situé en clair : « Secteur
+nord-est d'Antibes — avenue de Nice », le nom de rue venant du routeur.
+
+Trois garde-fous :
+
+- Une commune géocodée à l'adresse près n'a pas d'emprise. Les départs sont
+  alors écartés d'au moins **un rayon de boucle**, faute de quoi les circuits se
+  superposeraient à nouveau.
+- Un départ **non desservi** — en mer, en forêt, hors du réseau — est détecté :
+  si le routeur l'accroche à plus de 1,5 km, on le ramène à mi-chemin du centre,
+  puis au centre.
+- La répartition est **déterministe** : l'écran de réglages affiche et
+  cartographie les départs exacts qui serviront à la génération.
+
+Deux réglages restent possibles : « Depuis le centre » ramène toutes les boucles
+au centre-ville, et un départ choisi à la main (votre position, une adresse)
+l'emporte sur la répartition — toutes les boucles en partent.
 
 ## Le principe (parcours touristiques)
 
@@ -91,6 +115,23 @@ La capacité suit alors directement le temps. Dans une même ville : 45 min →
 Un budget peut être **intenable** : un parcours ne descend pas sous 2 arrêts,
 et deux musées à 45 min dépassent déjà l'heure et demie. L'écran le signale au
 lieu de livrer silencieusement des parcours deux fois trop longs.
+
+### Imposer le nombre d'arrêts malgré le temps
+
+On peut vouloir les deux : « une heure et demie, en cinq arrêts ». Le cadrage
+par le temps accepte alors un **nombre d'arrêts imposé** — c'est la distance de
+marche qui s'ajuste pour tenir dans le budget, et les trois bornes valent
+exactement le nombre demandé, sans marge.
+
+Cette distance est le plus grand des deux termes suivants :
+
+- le **temps que les visites laissent libre** (`temps − arrêts × visite`), ce
+  qui permet de marcher davantage quand les arrêts sont peu nombreux ;
+- le **trajet incompressible** entre n arrêts (`(n−1) × trajet type × 1,4`),
+  parce qu'on ne peut pas marcher moins que la distance qui sépare les lieux.
+
+Quand le second l'emporte, la consigne ne rentre pas dans le temps : l'écran
+affiche le dépassement attendu et propose de baisser le nombre d'arrêts.
 
 ## Le parcours utilisateur
 

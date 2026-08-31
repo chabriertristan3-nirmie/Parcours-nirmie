@@ -134,8 +134,16 @@ export interface RouteConfig {
   // --- Propres aux parcours libres ---------------------------------------
   /** Longueur visée de la boucle, en km. */
   targetDistanceKm: number;
-  /** Point de départ. `null` = centre-ville. */
+  /** Point de départ imposé. `null` = déterminé par le générateur. */
   start: StartPoint | null;
+  /**
+   * Répartit les départs sur toute la commune, un par boucle.
+   *
+   * Sans cela, toutes les boucles partent du même point et se recouvrent :
+   * quatre circuits de 3,5 km deviennent quatre variantes du même. Ignoré dès
+   * qu'un départ est imposé par `start`.
+   */
+  spreadStarts: boolean;
   /** Ce qui cadre la taille des parcours : les arrêts, ou le temps. */
   sizingMode: SizingMode;
   /** Temps disponible par parcours, en minutes (mode `duration`). */
@@ -176,6 +184,7 @@ export const DEFAULT_ROUTE_CONFIG: RouteConfig = {
   travelMode: 'walk',
   targetDistanceKm: 6,
   start: null,
+  spreadStarts: true,
   sizingMode: 'stops',
   targetMinutes: 90,
   stopsOverride: null,

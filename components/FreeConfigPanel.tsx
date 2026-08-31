@@ -13,9 +13,9 @@ import {
   Shuffle,
   Wand2,
 } from 'lucide-react';
-import { CityInfo, MODE_PRESETS, RouteConfig, TravelMode } from '../types';
+import { CityInfo, MODE_PRESETS, POI, RouteConfig, TravelMode } from '../types';
 import { formatDuration } from '../services/geo';
-import { loopCountFor, startPointFor } from '../services/loopPlanner';
+import { loopCountFor, spreadStartPoints, startPointFor } from '../services/loopPlanner';
 import { geocodeCity } from '../services/osmService';
 import { MapView } from './MapView';
 
@@ -42,6 +42,23 @@ export const FreeConfigPanel: React.FC<Props> = ({
   const start = startPointFor(city, config);
   const effortMinutes = (config.targetDistanceKm / config.paceKmh) * 60;
   const loopCount = loopCountFor(config);
+
+  // Les départs sont déterministes : ceux affichés ici sont exactement ceux qui
+  // serviront à la génération.
+  const starts = spreadStartPoints(city, config, loopCount);
+  const spread = !config.start && config.spreadStarts && loopCount > 1;
+
+  const startMarkers: POI[] = starts.map((point, i) => ({
+    id: `start-${i}`,
+    name: point.label,
+    theme: 'Places & Vie locale',
+    subtype: `Départ ${i + 1}`,
+    lat: point.lat,
+    lng: point.lng,
+    notoriety: 100,
+    visitMinutes: 0,
+    source: 'manual',
+  }));
 
   const switchMode = (mode: TravelMode) => {
     if (mode === config.travelMode) return;
@@ -120,7 +137,11 @@ export const FreeConfigPanel: React.FC<Props> = ({
               ~<strong>{formatDuration(effortMinutes)}</strong> de{' '}
               {config.travelMode === 'bike' ? 'vélo' : 'marche'}, sans arrêt
             </p>
-            <p className="text-blue-100/80 text-xs">Départ : {start.label}</p>
+            <p className="text-blue-100/80 text-xs">
+              {spread
+                ? `Départs répartis dans ${loopCount} quartiers`
+                : `Départ : ${start.label}`}
+            </p>
           </div>
         </div>
         <p className="text-[11px] text-blue-100/70 mt-4 leading-relaxed max-w-2xl">
@@ -228,7 +249,7 @@ export const FreeConfigPanel: React.FC<Props> = ({
                 Nombre de boucles
               </h3>
               <p className="text-[11px] text-gray-400 mt-1 ml-6">
-                Chacune part dans une direction différente.
+                Chacune part d'un quartier différent de la commune.
               </p>
             </div>
             <div className="flex items-center justify-between">
@@ -252,29 +273,75 @@ export const FreeConfigPanel: React.FC<Props> = ({
             <div>
               <h3 className="flex items-center gap-2 text-sm font-black text-gray-700 uppercase tracking-wide">
                 <MapPin className="w-4 h-4 text-blue-500" />
-                Point de départ
+                Points de départ
               </h3>
               <p className="text-[11px] text-gray-400 mt-1 ml-6">
-                Chaque boucle part d'ici et y revient.
+                Chaque boucle part d'un point et y revient.
               </p>
             </div>
 
-            <div className="bg-blue-50 border border-blue-100 rounded-2xl p-3 flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm font-bold text-blue-900 truncate">{start.label}</p>
-                <p className="text-[10px] text-blue-600 font-mono">
-                  {start.lat.toFixed(5)}, {start.lng.toFixed(5)}
+            {!config.start && (
+              <div className="grid grid-cols-2 gap-2">
+                {(
+                  [
+                    [true, 'Toute la commune'],
+                    [false, 'Depuis le centre'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={label}
+                    onClick={() => onChange({ spreadStarts: value })}
+                    className={`py-2.5 rounded-xl border-2 text-[11px] font-bold transition-all ${
+                      config.spreadStarts === value
+                        ? 'border-blue-500 bg-blue-50 text-blue-700'
+                        : 'border-gray-100 text-gray-400 hover:border-gray-200'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {spread ? (
+              <div className="bg-blue-50 border border-blue-100 rounded-2xl p-3 space-y-2">
+                <p className="text-[10px] font-black text-blue-700 uppercase tracking-widest">
+                  {starts.length} départs répartis dans la commune
+                </p>
+                <div className="space-y-1">
+                  {starts.map((point, i) => (
+                    <div key={i} className="flex items-baseline gap-2 text-xs text-blue-900">
+                      <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] font-black flex items-center justify-center flex-shrink-0">
+                        {i + 1}
+                      </span>
+                      <span className="font-bold truncate">{point.label}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] text-blue-600/80 leading-relaxed">
+                  Un quartier par boucle : c'est ce qui les rend réellement
+                  différentes. Un départ non desservi par les rues est ramené vers
+                  le centre.
                 </p>
               </div>
-              {config.start && (
-                <button
-                  onClick={() => onChange({ start: null })}
-                  className="text-[10px] font-bold text-blue-600 hover:underline flex-shrink-0"
-                >
-                  Centre-ville
-                </button>
-              )}
-            </div>
+            ) : (
+              <div className="bg-blue-50 border border-blue-100 rounded-2xl p-3 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-blue-900 truncate">{start.label}</p>
+                  <p className="text-[10px] text-blue-600 font-mono">
+                    {start.lat.toFixed(5)}, {start.lng.toFixed(5)}
+                  </p>
+                </div>
+                {config.start && (
+                  <button
+                    onClick={() => onChange({ start: null })}
+                    className="text-[10px] font-bold text-blue-600 hover:underline flex-shrink-0"
+                  >
+                    Toute la commune
+                  </button>
+                )}
+              </div>
+            )}
 
             <button
               onClick={useMyPosition}
@@ -305,22 +372,7 @@ export const FreeConfigPanel: React.FC<Props> = ({
           </div>
 
           <div className="rounded-2xl overflow-hidden border border-gray-100">
-            <MapView
-              pois={[
-                {
-                  id: 'start',
-                  name: start.label,
-                  theme: 'Places & Vie locale',
-                  subtype: 'Départ',
-                  lat: start.lat,
-                  lng: start.lng,
-                  notoriety: 100,
-                  visitMinutes: 0,
-                  source: 'manual',
-                },
-              ]}
-              className="w-full h-56"
-            />
+            <MapView pois={startMarkers} className="w-full h-56" />
           </div>
 
           <div className="bg-gray-50 border border-gray-100 rounded-2xl p-4 flex items-start gap-3">

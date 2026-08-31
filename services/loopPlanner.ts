@@ -20,7 +20,7 @@ import {
   RouteStep,
   StartPoint,
 } from '../types';
-import { destinationPoint, tracePathLengthM } from './geo';
+import { destinationPoint, haversineM, tracePathLengthM } from './geo';
 import { fetchRoutedPath } from './routingService';
 
 /** Écart accepté entre la distance obtenue et celle demandée. */
@@ -130,13 +130,127 @@ export const spreadBearing = (index: number, total: number, rng: () => number): 
 };
 
 // --------------------------------------------------------------------------
+// Répartition des départs dans la commune
+// --------------------------------------------------------------------------
+
+/**
+ * Où poser les départs, en fraction de la demi-étendue de la commune.
+ *
+ * À 55 %, les départs occupent vraiment le territoire sans se coller aux
+ * limites communales, où le réseau de rues se raréfie.
+ */
+const COMMUNE_SPREAD_RATIO = 0.55;
+
+/** Degrés de latitude par mètre. Suffisant : on raisonne en ordres de grandeur. */
+const M_PER_DEG_LAT = 111320;
+
+const SECTORS = [
+  'nord',
+  'nord-est',
+  'est',
+  'sud-est',
+  'sud',
+  'sud-ouest',
+  'ouest',
+  'nord-ouest',
+];
+
+/** Nom du secteur correspondant à un cap, pour situer un départ en clair. */
+export const sectorName = (bearing: number): string =>
+  SECTORS[Math.round((((bearing % 360) + 360) % 360) / 45) % 8];
+
+/** « d'Antibes », « de Nîmes » — l'élision, sinon les titres sont fautifs. */
+const ofCity = (name: string): string =>
+  /^[aàâeéèêiîoôuùûyh]/i.test(name) ? `d'${name}` : `de ${name}`;
+
+/** Départ par défaut : le centre de la commune. */
+const cityCentre = (city: CityInfo): StartPoint => ({
+  lat: city.lat,
+  lng: city.lng,
+  label: `Centre ${ofCity(city.name)}`,
+});
+
+/**
+ * Détermine un point de départ par boucle, répartis sur toute la commune.
+ *
+ * C'est ce qui distingue quatre boucles de 3,5 km les unes des autres : partant
+ * toutes du même point, elles se recouvrent quelle que soit leur forme. On les
+ * ancre donc dans des quartiers différents, sur l'ellipse inscrite dans
+ * l'emprise de la commune — la forme de cette ellipse suit celle du territoire,
+ * qu'il soit ramassé ou tout en longueur.
+ *
+ * Volontairement déterministe : l'écran de réglages peut ainsi montrer les
+ * départs exacts qui seront utilisés. Le hasard reste dans la forme des boucles.
+ */
+export const spreadStartPoints = (
+  city: CityInfo,
+  config: RouteConfig,
+  total: number
+): StartPoint[] => {
+  const centre = cityCentre(city);
+
+  // Un départ choisi à la main est une consigne : toutes les boucles en partent.
+  if (config.start) return Array.from({ length: total }, () => config.start as StartPoint);
+  if (!config.spreadStarts || total <= 1) return Array.from({ length: total }, () => centre);
+
+  const [south, north, west, east] = city.bbox;
+  const latRadiusDeg = (Math.abs(north - south) / 2) * COMMUNE_SPREAD_RATIO;
+  const lngRadiusDeg = (Math.abs(east - west) / 2) * COMMUNE_SPREAD_RATIO;
+
+  // Une commune géocodée à l'adresse près a une emprise nulle : sans plancher,
+  // tous les départs retomberaient au même endroit. On garantit alors un rayon
+  // de boucle d'écart, de quoi obtenir des circuits distincts.
+  const loopRadiusM = (config.targetDistanceKm * 1000) / (2 * Math.PI);
+  const minLatDeg = loopRadiusM / M_PER_DEG_LAT;
+  const cosLat = Math.max(0.2, Math.cos((city.lat * Math.PI) / 180));
+
+  const latSpread = Math.max(latRadiusDeg, minLatDeg);
+  const lngSpread = Math.max(lngRadiusDeg, minLatDeg / cosLat);
+
+  return Array.from({ length: total }, (_, i) => {
+    const bearing = (i * 360) / total;
+    const rad = (bearing * Math.PI) / 180;
+    return {
+      lat: city.lat + latSpread * Math.cos(rad),
+      lng: city.lng + lngSpread * Math.sin(rad),
+      label: `Secteur ${sectorName(bearing)} ${ofCity(city.name)}`,
+    };
+  });
+};
+
+/**
+ * Replis d'un départ qui ne mène à rien : à mi-chemin du centre, puis au centre.
+ *
+ * Un point réparti peut tomber en mer, en forêt ou hors du réseau de rues.
+ * Plutôt que de perdre la boucle, on la ramène progressivement vers le tissu
+ * urbain, où le routeur trouve toujours de quoi tracer.
+ */
+const fallbackStarts = (anchor: StartPoint, city: CityInfo): StartPoint[] => {
+  const centre = cityCentre(city);
+  if (anchor.lat === centre.lat && anchor.lng === centre.lng) return [anchor];
+  return [
+    anchor,
+    { ...anchor, lat: (anchor.lat + city.lat) / 2, lng: (anchor.lng + city.lng) / 2 },
+    centre,
+  ];
+};
+
+// --------------------------------------------------------------------------
 // Construction d'une boucle
 // --------------------------------------------------------------------------
+
+/**
+ * Écart maximal toléré entre le départ demandé et l'endroit où le routeur
+ * l'accroche. Au-delà, le point n'est pas desservi : on essaie ailleurs.
+ */
+const MAX_SNAP_M = 1500;
 
 interface LoopAttempt {
   path: PathPoint[];
   distanceM: number;
   waypointNames: string[];
+  /** Nom de la voie du départ, tel qu'accroché par le routeur. */
+  startName: string;
   waypoints: { lat: number; lng: number }[];
   error: number;
 }
@@ -160,6 +274,19 @@ const planOneLoop = async (
     const routed = await fetchRoutedPath([start, ...waypoints], config.travelMode, true);
     if (!routed) return best;
 
+    // Le départ n'est pas desservi : inutile d'insister, l'appelant essaiera
+    // un autre ancrage. On ne le teste qu'au premier essai, le départ ne
+    // bougeant pas d'une tentative à l'autre.
+    const snapped = routed.waypointLocations[0];
+    if (
+      attempt === 0 &&
+      snapped &&
+      Number.isFinite(snapped.lat) &&
+      haversineM(start, snapped) > MAX_SNAP_M
+    ) {
+      return null;
+    }
+
     const path = routed.legs.flatMap((leg, i) => (i === 0 ? leg.path : leg.path.slice(1)));
     const error = Math.abs(routed.totalDistanceM - targetM) / targetM;
 
@@ -170,6 +297,7 @@ const planOneLoop = async (
         // Le premier et le dernier point envoyés sont le départ : on ne garde
         // que les jalons intermédiaires.
         waypointNames: routed.waypointNames.slice(1, -1),
+        startName: routed.waypointNames[0] ?? '',
         waypoints,
         error,
       };
@@ -276,8 +404,12 @@ const buildLoopSteps = (
   return steps;
 };
 
-const loopTitle = (city: string, distanceKm: number, index: number): string =>
-  `Boucle de ${distanceKm} km à ${city} — n°${index + 1}`;
+const loopTitle = (distanceKm: number, startLabel: string, index: number): string =>
+  `Boucle ${index + 1} · ${distanceKm} km — ${startLabel}`;
+
+/** Le nom de la rue du départ, quand le routeur le connaît, précise le repère. */
+const startLabelWithStreet = (anchor: StartPoint, street: string): string =>
+  street && street.length > 1 ? `${anchor.label} — ${street}` : anchor.label;
 
 // --------------------------------------------------------------------------
 // Point d'entrée
@@ -295,8 +427,8 @@ export const planFreeRoutes = async (
   onProgress?: (done: number, total: number) => void,
   seed: number = Date.now()
 ): Promise<{ routes: GeneratedRoute[]; failures: number }> => {
-  const start = startPointFor(city, config);
   const total = loopCountFor(config);
+  const anchors = spreadStartPoints(city, config, total);
   const rng = makeRng(seed);
 
   const routes: GeneratedRoute[] = [];
@@ -304,14 +436,27 @@ export const planFreeRoutes = async (
 
   for (let i = 0; i < total; i++) {
     const shape = randomLoopShape(rng, spreadBearing(i, total, rng));
-    const attempt = await planOneLoop(start, config, shape);
+
+    // On essaie le départ prévu, puis des replis vers le centre s'il n'est pas
+    // desservi. Le premier qui aboutit gagne.
+    let attempt: LoopAttempt | null = null;
+    let start = anchors[i];
+    for (const candidate of fallbackStarts(anchors[i], city)) {
+      attempt = await planOneLoop(candidate, config, shape);
+      if (attempt && attempt.path.length >= 2) {
+        start = candidate;
+        break;
+      }
+      attempt = null;
+    }
     onProgress?.(i + 1, total);
 
-    if (!attempt || attempt.path.length < 2) {
+    if (!attempt) {
       failures++;
       continue;
     }
 
+    start = { ...start, label: startLabelWithStreet(start, attempt.startName) };
     const steps = buildLoopSteps(start, attempt, config);
     const distanceKm = Math.round((attempt.distanceM / 1000) * 10) / 10;
     const walkingMinutes = Math.round((attempt.distanceM / 1000 / config.paceKmh) * 60);
@@ -320,7 +465,7 @@ export const planFreeRoutes = async (
       id: `loop-${Date.now()}-${i}`,
       createdAt: new Date().toISOString(),
       summary: {
-        title: loopTitle(city.name, distanceKm, i),
+        title: loopTitle(distanceKm, start.label, i),
         city: city.name,
         theme: 'Boucle libre',
         travelMode: config.travelMode,
@@ -341,13 +486,9 @@ export const planFreeRoutes = async (
   return { routes, failures };
 };
 
-/** Point de départ effectif d'une boucle. Partagé avec l'écran de réglages. */
+/** Point de départ de référence. Partagé avec l'écran de réglages. */
 export const startPointFor = (city: CityInfo, config: RouteConfig): StartPoint =>
-  config.start ?? {
-    lat: city.lat,
-    lng: city.lng,
-    label: `Centre de ${city.name}`,
-  };
+  config.start ?? cityCentre(city);
 
 /** Nombre de boucles effectif. Partagé avec l'écran de réglages. */
 export const loopCountFor = (config: RouteConfig): number => Math.max(1, config.routeCount ?? 3);

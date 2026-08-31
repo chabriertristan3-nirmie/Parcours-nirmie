@@ -35,6 +35,12 @@ export interface RoutedPath {
    * Chaîne vide pour une voie sans nom.
    */
   waypointNames: string[];
+  /**
+   * Où chaque point demandé s'est réellement accroché sur le réseau, dans
+   * l'ordre envoyé. Un écart important signale un point non desservi — en mer,
+   * en forêt, hors du réseau routier — et permet de le rejeter.
+   */
+  waypointLocations: { lat: number; lng: number }[];
 }
 
 /** GeoJSON renvoie `[lng, lat]`, l'application travaille en `[lat, lng]`. */
@@ -106,6 +112,11 @@ export const fetchRoutedPath = async (
       legs,
       totalDistanceM: Math.round(route.distance ?? 0),
       waypointNames: (json.waypoints || []).map((w: any) => String(w?.name ?? '').trim()),
+      // OSRM renvoie `location` en `[lng, lat]`, comme tout le reste du GeoJSON.
+      waypointLocations: (json.waypoints || []).map((w: any) => ({
+        lat: Number(w?.location?.[1] ?? NaN),
+        lng: Number(w?.location?.[0] ?? NaN),
+      })),
     };
   } catch {
     // Réseau coupé, serveur saturé, délai dépassé : repli sur lignes droites.

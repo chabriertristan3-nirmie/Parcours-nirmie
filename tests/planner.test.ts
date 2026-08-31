@@ -10,8 +10,22 @@ import { pathLengthM, haversineM, destinationPoint, bearingDeg, tracePathLengthM
 import { safetyExclusion } from '../services/osmService';
 import { pickModel, describeApiError } from '../services/geminiService';
 import { applyRoutedPath, straightPath } from '../services/routingService';
-import { makeRng, randomLoopShape, shapeWaypoints, spreadBearing } from '../services/loopPlanner';
-import { DEFAULT_ROUTE_CONFIG, POI, POI_THEMES, PoiTheme, RouteConfig } from '../types';
+import {
+  makeRng,
+  randomLoopShape,
+  sectorName,
+  shapeWaypoints,
+  spreadBearing,
+  spreadStartPoints,
+} from '../services/loopPlanner';
+import {
+  CityInfo,
+  DEFAULT_ROUTE_CONFIG,
+  POI,
+  POI_THEMES,
+  PoiTheme,
+  RouteConfig,
+} from '../types';
 
 let failures = 0;
 const check = (label: string, condition: boolean, detail = '') => {
@@ -269,7 +283,11 @@ console.log('\n== Tracé par les rues ==');
     };
   });
   const totalDistanceM = legs.reduce((sum, l) => sum + l.distanceM, 0);
-  const routed = applyRoutedPath(route, { legs, totalDistanceM, waypointNames: [] }, config);
+  const routed = applyRoutedPath(
+    route,
+    { legs, totalDistanceM, waypointNames: [], waypointLocations: [] },
+    config
+  );
 
   check('après routage : géométrie marquée comme réelle', routed.geometrySource === 'osrm');
   check('distances réelles reprises des segments',
@@ -586,6 +604,90 @@ console.log('\n== Par le temps, avec un nombre d\'arrêts imposé ==');
   check('parcours générés avec exactement le nombre d\'arrêts imposé',
     planned.length > 0 && planned.every(r => r.steps.length === 5),
     `${planned.length} parcours de ${planned.map(r => r.steps.length).join(', ')} arrêts`);
+}
+
+console.log('\n== Parcours libres : départs répartis dans la commune ==');
+{
+  // Commune type : ~7 km nord-sud, ~9 km est-ouest.
+  const city: CityInfo = {
+    name: 'Antibes',
+    displayName: 'Antibes, Alpes-Maritimes',
+    lat: 43.58,
+    lng: 7.12,
+    bbox: [43.548, 43.612, 7.062, 7.178],
+  };
+  const free = (o: Partial<RouteConfig> = {}): RouteConfig => ({
+    ...DEFAULT_ROUTE_CONFIG, kind: 'free', targetDistanceKm: 3.5, ...o,
+  });
+
+  const starts = spreadStartPoints(city, free(), 4);
+  check('un départ par boucle', starts.length === 4);
+  check('aucun départ n\'en double un autre',
+    new Set(starts.map(s => `${s.lat.toFixed(4)},${s.lng.toFixed(4)}`)).size === 4);
+
+  // Le grief de départ : quatre boucles de 3,5 km parties du même point se
+  // recouvrent. Il faut au moins un rayon de boucle entre deux départs.
+  const loopRadiusM = (3.5 * 1000) / (2 * Math.PI);
+  const gaps = starts.flatMap((a, i) =>
+    starts.slice(i + 1).map(b => haversineM(a, b)));
+  check('des départs assez éloignés pour donner des boucles distinctes',
+    Math.min(...gaps) > loopRadiusM,
+    `${Math.round(Math.min(...gaps))} m au plus près, rayon de boucle ${Math.round(loopRadiusM)} m`);
+
+  // …mais qui restent dans la commune, sinon on trace ailleurs qu'ici.
+  const [south, north, west, east] = city.bbox;
+  check('tous les départs à l\'intérieur de la commune',
+    starts.every(s => s.lat > south && s.lat < north && s.lng > west && s.lng < east));
+
+  // Le territoire est plus large que haut : la répartition doit le suivre.
+  const latSpan = Math.max(...starts.map(s => s.lat)) - Math.min(...starts.map(s => s.lat));
+  const lngSpan = Math.max(...starts.map(s => s.lng)) - Math.min(...starts.map(s => s.lng));
+  check('la répartition épouse la forme de la commune',
+    lngSpan > latSpan, `${lngSpan.toFixed(4)}° est-ouest contre ${latSpan.toFixed(4)}° nord-sud`);
+
+  check('chaque départ est situé en clair',
+    starts.every(s => /^Secteur (nord|sud|est|ouest|nord-est|nord-ouest|sud-est|sud-ouest) d'Antibes$/.test(s.label)),
+    starts.map(s => s.label).join(' · '));
+  check('les secteurs nommés correspondent aux caps',
+    sectorName(0) === 'nord' && sectorName(90) === 'est' &&
+    sectorName(225) === 'sud-ouest' && sectorName(359) === 'nord');
+  check('élision correcte devant une consonne',
+    spreadStartPoints({ ...city, name: 'Nîmes' }, free(), 2)[0].label.endsWith('de Nîmes'));
+
+  // Les départs ne bougent pas d'un appel à l'autre : l'écran de réglages peut
+  // donc annoncer exactement ceux qui serviront.
+  check('répartition déterministe',
+    JSON.stringify(spreadStartPoints(city, free(), 4)) === JSON.stringify(starts));
+
+  // Un départ imposé reste un départ imposé.
+  const pinned = { lat: 43.6, lng: 7.13, label: 'Ma position' };
+  const forced = spreadStartPoints(city, free({ start: pinned }), 3);
+  check('un départ choisi à la main l\'emporte sur la répartition',
+    forced.length === 3 && forced.every(s => s.label === 'Ma position' && s.lat === 43.6));
+
+  const centred = spreadStartPoints(city, free({ spreadStarts: false }), 3);
+  check('« depuis le centre » ramène tout au centre-ville',
+    centred.every(s => s.lat === city.lat && s.lng === city.lng),
+    centred[0].label);
+
+  const single = spreadStartPoints(city, free(), 1);
+  check('une seule boucle part du centre, pas d\'un secteur',
+    single.length === 1 && single[0].lat === city.lat);
+
+  // Une ville géocodée à l'adresse près n'a pas d'emprise : la répartition doit
+  // quand même écarter les départs, sinon les boucles se superposent à nouveau.
+  const pointCity: CityInfo = { ...city, bbox: [43.58, 43.58, 7.12, 7.12] };
+  const tiny = spreadStartPoints(pointCity, free(), 3);
+  const tinyGaps = tiny.flatMap((a, i) => tiny.slice(i + 1).map(b => haversineM(a, b)));
+  check('emprise nulle : les départs sont quand même écartés',
+    Math.min(...tinyGaps) > loopRadiusM * 0.8,
+    `${Math.round(Math.min(...tinyGaps))} m au plus près`);
+
+  // Plus la boucle est longue, plus il faut d'écart entre deux départs.
+  const longLoops = spreadStartPoints(pointCity, free({ targetDistanceKm: 12 }), 3);
+  const longGap = haversineM(longLoops[0], longLoops[1]);
+  check('des boucles plus longues écartent davantage les départs',
+    longGap > Math.min(...tinyGaps), `${Math.round(longGap)} m contre ${Math.round(Math.min(...tinyGaps))} m`);
 }
 
 console.log(failures === 0 ? '\nTous les tests passent.\n' : `\n${failures} test(s) en échec.\n`);
