@@ -5,7 +5,45 @@ Générateur de parcours touristiques à pied pour l'application **Nirmie**.
 On saisit une ville, on obtient d'abord **l'inventaire de ses lieux touristiques**,
 puis autant de parcours que cette ville peut réellement porter.
 
-## Le principe
+## Deux familles de parcours
+
+Le choix se fait au tout premier écran, avant la ville.
+
+**Parcours touristique — les lieux commandent.** On relève tous les lieux
+touristiques, on retient ceux qu'on veut, le générateur les enchaîne en
+parcours de visite avec arrêts, temps de visite et anecdotes. C'est le mode
+décrit dans le reste de ce document.
+
+**Parcours libre — la distance commande.** On donne une longueur et un point
+de départ, le générateur trace une boucle de cette longueur par les rues et
+les chemins. Aucun arrêt imposé : la durée affichée est du pur effort. Mode
+balade, footing, sortie vélo.
+
+### Comment la boucle est tracée
+
+Quatre jalons sont posés sur un cercle autour du départ, et OSRM relie le tout.
+Si le circuit obtenu ne fait pas la bonne longueur, le rayon est corrigé et on
+recommence — jusqu'à tomber à moins de 12 % de la cible.
+
+Une seconde passe attire ensuite chaque jalon vers un lieu agréable **dans sa
+direction** : on cherche par secteur (« qu'y a-t-il vers le nord-est ? ») et on
+retient le lieu dont la distance au départ colle le mieux au rayon. Ces lieux
+deviennent des **repères croisés en chemin**, avec zéro temps de visite. Si ce
+détour éloigne trop de la distance visée, le rayon est resserré et retenté ;
+en dernier recours la longueur l'emporte sur le décor.
+
+Le réglage **Ambiance** décide vers quoi attirer la boucle : verdure et eau
+(parcs, jardins, points de vue), vieilles pierres (patrimoine, places), ou
+indifférent.
+
+Quand plusieurs boucles sont demandées, elles sont réparties **à l'intérieur
+d'un secteur** et non sur le tour complet : les jalons étant espacés de 90°,
+une rotation de 90° ou 180° redonnerait le même circuit.
+
+Le départ est le centre-ville par défaut, et peut être votre position ou une
+adresse.
+
+## Le principe (parcours touristiques)
 
 Le nombre de parcours n'est pas décidé à l'avance : il se **déduit** du nombre
 de lieux disponibles et de la taille de parcours souhaitée.
@@ -19,6 +57,7 @@ Passez le minimum à 6 : elle en porte 10. C'est le terrain qui décide.
 
 ## Le parcours utilisateur
 
+0. **Type** — parcours touristique ou parcours libre.
 1. **Ville** — saisie du nom, géocodage.
 2. **Lieux** — l'inventaire complet s'affiche : nombre total, répartition par
    thème, carte, notoriété de chaque lieu. On filtre, on écarte, on ajoute.
@@ -108,6 +147,11 @@ explicitement, sur la carte comme dans les données (`geometrySource`).
 
   // "osrm" = tracé réel par les rues, "straight" = lignes droites de secours.
   "geometrySource": "osrm",
+
+  // "tour" (visite de lieux) ou "free" (boucle libre, visitMinutes toujours 0).
+  // Absent sur les parcours produits avant l'arrivée des parcours libres : ce
+  // sont des "tour".
+  "summary": { "kind": "free" },
 
   "steps": [
     {

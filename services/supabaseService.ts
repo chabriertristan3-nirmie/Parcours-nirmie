@@ -60,6 +60,7 @@ const routeRow = (route: GeneratedRoute, packId: string) => ({
   title: route.summary.title,
   theme: route.summary.theme,
   travel_mode: route.summary.travelMode ?? 'walk',
+  kind: route.summary.kind ?? 'tour',
   intro: route.summary.intro ?? null,
   // Tracé complet, pour le mode live de l'application Nirmie.
   path: route.path,

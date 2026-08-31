@@ -29,6 +29,7 @@ interface Props {
 export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved }) => {
   const themeColor = THEME_COLORS[route.summary.theme as PoiTheme] || '#10b981';
   const isBike = route.summary.travelMode === 'bike';
+  const isFree = route.summary.kind === 'free';
   const ModeIcon = isBike ? Bike : Footprints;
 
   /**
@@ -93,7 +94,10 @@ export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved })
 
           <div className="flex flex-wrap justify-center gap-6 mt-5 text-sm font-medium">
             <span className="flex items-center gap-2">
-              <MapPin className="w-4 h-4" /> {route.summary.stopsCount} arrêts
+              <MapPin className="w-4 h-4" />{' '}
+              {isFree
+                ? `${Math.max(0, route.summary.stopsCount - 1)} repères`
+                : `${route.summary.stopsCount} arrêts`}
             </span>
             <span className="flex items-center gap-2">
               <ModeIcon className="w-4 h-4" /> {route.summary.totalDistanceKm} km
@@ -109,8 +113,11 @@ export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved })
             )}
           </div>
           <p className="text-[11px] text-white/70 mt-2">
-            + {formatDuration(route.summary.visitMinutes)} de visites, soit{' '}
-            {formatDuration(route.summary.totalMinutes)} en comptant les arrêts
+            {isFree
+              ? "Parcours libre : aucun arrêt imposé, la durée est celle de l'effort."
+              : `+ ${formatDuration(route.summary.visitMinutes)} de visites, soit ${formatDuration(
+                  route.summary.totalMinutes
+                )} en comptant les arrêts`}
           </p>
         </div>
       </div>
@@ -119,16 +126,24 @@ export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved })
       <div className="hidden print:block">
         <h1 className="text-2xl font-bold">{route.summary.title}</h1>
         <p className="text-sm">
-          {route.summary.city} • {route.summary.stopsCount} arrêts •{' '}
+          {route.summary.city} •{' '}
+          {isFree
+            ? `${Math.max(0, route.summary.stopsCount - 1)} repères`
+            : `${route.summary.stopsCount} arrêts`}{' '}
+          •{' '}
           {route.summary.totalDistanceKm} km • {formatDuration(route.summary.walkingMinutes)} de{' '}
-          {isBike ? 'vélo' : 'marche'} (+{formatDuration(route.summary.visitMinutes)} de visites)
+          {isBike ? 'vélo' : 'marche'}
+          {route.summary.visitMinutes > 0 &&
+            ` (+${formatDuration(route.summary.visitMinutes)} de visites)`}
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Étapes --------------------------------------------------------- */}
         <div className="lg:col-span-2 space-y-6">
-          <h3 className="text-xl font-bold text-gray-800 px-2 no-print">Parcours détaillé</h3>
+          <h3 className="text-xl font-bold text-gray-800 px-2 no-print">
+            {isFree ? 'Repères le long du parcours' : 'Parcours détaillé'}
+          </h3>
 
           <div className="relative before:absolute before:inset-0 before:ml-8 before:w-0.5 before:-translate-x-px before:bg-gray-200 before:h-full before:z-0">
             {route.steps.map((step) => (
@@ -151,9 +166,11 @@ export const ResultsView: React.FC<Props> = ({ route, onBack, onSave, isSaved })
                         {step.address ? ` • ${step.address}` : ''}
                       </p>
                     </div>
-                    <span className="text-[10px] font-black text-gray-400 whitespace-nowrap bg-gray-50 px-2 py-1 rounded-lg">
-                      {step.visitMinutes} min
-                    </span>
+                    {step.visitMinutes > 0 && (
+                      <span className="text-[10px] font-black text-gray-400 whitespace-nowrap bg-gray-50 px-2 py-1 rounded-lg">
+                        {step.visitMinutes} min
+                      </span>
+                    )}
                   </div>
 
                   {step.distanceFromPrevM > 0 && (

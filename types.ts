@@ -32,6 +32,31 @@ export type PoiSource = 'osm' | 'ai' | 'manual';
 
 export type TravelMode = 'walk' | 'bike';
 
+/**
+ * Les deux familles de parcours.
+ *
+ * `tour` : les lieux commandent. On enchaîne des POI et on s'arrête à chacun.
+ * `free` : la distance commande. On trace une boucle de la longueur demandée ;
+ *          les lieux ne sont que des repères croisés en chemin, sans arrêt.
+ */
+export type RouteKind = 'tour' | 'free';
+
+/** Ce vers quoi on oriente une boucle libre. */
+export type Ambience = 'any' | 'nature' | 'heritage';
+
+export const AMBIENCE_LABELS: Record<Ambience, { label: string; hint: string }> = {
+  any: { label: 'Indifférent', hint: 'La boucle passe par ce qui se présente' },
+  nature: { label: 'Verdure & eau', hint: 'Parcs, jardins, bords d’eau, points de vue' },
+  heritage: { label: 'Vieilles pierres', hint: 'Centre historique, places, patrimoine' },
+};
+
+/** Point de départ d'un parcours libre. */
+export interface StartPoint {
+  lat: number;
+  lng: number;
+  label: string;
+}
+
 export interface POI {
   id: string;
   name: string;
@@ -99,8 +124,18 @@ export interface PoiFilters {
 export type ThemeMode = 'mixed' | 'thematic';
 
 export interface RouteConfig {
+  /** Famille de parcours : visite de lieux, ou boucle à la distance voulue. */
+  kind: RouteKind;
   /** À pied ou à vélo — change les vitesses et les distances raisonnables. */
   travelMode: TravelMode;
+
+  // --- Propres aux parcours libres ---------------------------------------
+  /** Longueur visée de la boucle, en km. */
+  targetDistanceKm: number;
+  /** Vers quoi orienter la boucle. */
+  ambience: Ambience;
+  /** Point de départ. `null` = centre-ville. */
+  start: StartPoint | null;
   /** Bornes du nombre d'arrêts par parcours. */
   stopsMin: number;
   stopsTarget: number;
@@ -127,7 +162,11 @@ export interface RouteConfig {
 }
 
 export const DEFAULT_ROUTE_CONFIG: RouteConfig = {
+  kind: 'tour',
   travelMode: 'walk',
+  targetDistanceKm: 6,
+  ambience: 'any',
+  start: null,
   stopsMin: 4,
   stopsTarget: 6,
   stopsMax: 9,
@@ -227,6 +266,8 @@ export interface RouteSummary {
   theme: string;
   /** Absent sur les parcours sauvegardés avant l'arrivée du mode vélo. */
   travelMode?: TravelMode;
+  /** Absent sur les parcours antérieurs aux parcours libres : ils sont `tour`. */
+  kind?: RouteKind;
   totalDistanceKm: number;
   walkingMinutes: number;
   visitMinutes: number;

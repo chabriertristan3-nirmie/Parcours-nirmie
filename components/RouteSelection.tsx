@@ -36,6 +36,7 @@ export const RouteSelection: React.FC<Props> = ({
   const totalStops = routes.reduce((sum, r) => sum + r.steps.length, 0);
   const uniqueStops = new Set(routes.flatMap((r) => r.steps.map((s) => s.id))).size;
   const totalKm = routes.reduce((sum, r) => sum + r.summary.totalDistanceKm, 0);
+  const isFree = routes[0]?.summary.kind === 'free';
 
   const [supabaseState, setSupabaseState] = useState<
     { status: 'idle' } | { status: 'loading' } | { status: 'done'; detail: string } | { status: 'error'; detail: string }
@@ -114,14 +115,16 @@ export const RouteSelection: React.FC<Props> = ({
           Pack généré
         </p>
         <h2 className="text-3xl font-extrabold text-gray-900 mb-4">
-          {routes.length} parcours à {city}
+          {routes.length} {isFree ? 'boucle' : 'parcours'}
+          {isFree && routes.length > 1 ? 's' : ''} à {city}
         </h2>
         <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm text-gray-500">
           <span>
             <strong className="text-gray-800">{uniqueStops}</strong> lieux distincts
           </span>
           <span>
-            <strong className="text-gray-800">{totalStops}</strong> arrêts au total
+            <strong className="text-gray-800">{totalStops}</strong>{' '}
+            {isFree ? 'repères au total' : 'arrêts au total'}
           </span>
           <span>
             <strong className="text-gray-800">{totalKm.toFixed(1)} km</strong> cumulés
@@ -157,7 +160,9 @@ export const RouteSelection: React.FC<Props> = ({
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500 font-medium">
               <span className="flex items-center gap-1">
                 <MapPin className="w-3 h-3 text-nirmie-500" />
-                {route.summary.stopsCount} arrêts
+                {route.summary.kind === 'free'
+                  ? `${Math.max(0, route.summary.stopsCount - 1)} repères`
+                  : `${route.summary.stopsCount} arrêts`}
               </span>
               <span className="flex items-center gap-1">
                 {route.summary.travelMode === 'bike' ? (
@@ -175,9 +180,11 @@ export const RouteSelection: React.FC<Props> = ({
               >
                 <Clock className="w-3 h-3 text-nirmie-500" />
                 {formatDuration(route.summary.walkingMinutes)}
-                <span className="text-gray-300 font-normal">
-                  +{formatDuration(route.summary.visitMinutes)} visites
-                </span>
+                {route.summary.visitMinutes > 0 && (
+                  <span className="text-gray-300 font-normal">
+                    +{formatDuration(route.summary.visitMinutes)} visites
+                  </span>
+                )}
               </span>
               {route.summary.loop && (
                 <span className="flex items-center gap-1 text-nirmie-600">

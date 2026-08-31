@@ -49,6 +49,10 @@ export const pathLengthM = (
   return total;
 };
 
+/** Longueur d'un tracé donné en paires `[lat, lng]`, en mètres. */
+export const tracePathLengthM = (points: [number, number][]): number =>
+  pathLengthM(points.map(([lat, lng]) => ({ lat, lng })), false);
+
 export const centroid = (points: { lat: number; lng: number }[]) => {
   if (points.length === 0) return { lat: 0, lng: 0 };
   const sum = points.reduce(
@@ -146,6 +150,33 @@ export const orderStops = <T extends { lat: number; lng: number }>(
   return best;
 };
 
+/**
+ * Point situé à `distanceM` d'un autre, dans la direction `bearingDeg`
+ * (0 = nord, 90 = est). Sert à poser les jalons d'une boucle sur un cercle.
+ */
+export const destinationPoint = (
+  from: { lat: number; lng: number },
+  bearingDeg: number,
+  distanceM: number
+): { lat: number; lng: number } => {
+  const angular = distanceM / EARTH_RADIUS_M;
+  const bearing = toRad(bearingDeg);
+  const lat1 = toRad(from.lat);
+  const lng1 = toRad(from.lng);
+
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angular) + Math.cos(lat1) * Math.sin(angular) * Math.cos(bearing)
+  );
+  const lng2 =
+    lng1 +
+    Math.atan2(
+      Math.sin(bearing) * Math.sin(angular) * Math.cos(lat1),
+      Math.cos(angular) - Math.sin(lat1) * Math.sin(lat2)
+    );
+
+  return { lat: (lat2 * 180) / Math.PI, lng: (((lng2 * 180) / Math.PI + 540) % 360) - 180 };
+};
+
 export const formatDistance = (meters: number): string =>
   meters < 1000 ? `${Math.round(meters)} m` : `${(meters / 1000).toFixed(1)} km`;
 
@@ -162,6 +193,19 @@ export const bboxRadiusKm = (bbox: [number, number, number, number]): number => 
   const [south, north, west, east] = bbox;
   const diagonal = haversineM({ lat: south, lng: west }, { lat: north, lng: east });
   return Math.min(15, Math.max(2, diagonal / 2 / 1000));
+};
+
+/** Cap en degrés de `from` vers `to` (0 = nord, 90 = est). */
+export const bearingDeg = (
+  from: { lat: number; lng: number },
+  to: { lat: number; lng: number }
+): number => {
+  const lat1 = toRad(from.lat);
+  const lat2 = toRad(to.lat);
+  const dLng = toRad(to.lng - from.lng);
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  return (((Math.atan2(y, x) * 180) / Math.PI) + 360) % 360;
 };
 
 /** Étiquette lisible pour un POI dans les listes. */

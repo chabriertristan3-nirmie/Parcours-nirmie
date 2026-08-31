@@ -19,6 +19,8 @@ create table if not exists public.generator_routes (
   title           text not null,
   theme           text,
   travel_mode     text not null default 'walk' check (travel_mode in ('walk', 'bike')),
+  -- 'tour' = visite de lieux, 'free' = boucle libre sans arrêt imposé.
+  kind            text not null default 'tour' check (kind in ('tour', 'free')),
   intro           text,
   -- Tracé complet [[lat, lng], ...] suivant rues et chemins : c'est lui que
   -- le mode live de l'application affiche.

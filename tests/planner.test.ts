@@ -1,8 +1,9 @@
 import { computeCapacity, planRoutes, applyFilters } from '../services/routePlanner';
-import { pathLengthM, haversineM } from '../services/geo';
+import { pathLengthM, haversineM, destinationPoint, bearingDeg } from '../services/geo';
 import { safetyExclusion } from '../services/osmService';
 import { pickModel, describeApiError } from '../services/geminiService';
 import { applyRoutedPath, straightPath } from '../services/routingService';
+import { anchorsFor } from '../services/loopPlanner';
 import { DEFAULT_ROUTE_CONFIG, POI, POI_THEMES, PoiTheme, RouteConfig } from '../types';
 
 let failures = 0;
@@ -307,6 +308,60 @@ console.log('\n== Tracé de secours ==');
   const loop = straightPath(pois, true);
   check('boucle : le tracé revient au départ',
     loop.length === 5 && loop[4][0] === loop[0][0] && loop[4][1] === loop[0][1]);
+}
+
+console.log('\n== Géométrie du cercle (base des boucles) ==');
+{
+  const center = { lat: 45.9, lng: 6.13 };
+  const north = destinationPoint(center, 0, 1000);
+  const east = destinationPoint(center, 90, 1000);
+
+  check('point à 1 km : distance respectée',
+    Math.abs(haversineM(center, north) - 1000) < 1,
+    `${Math.round(haversineM(center, north))} m`);
+  check('cap nord => latitude plus haute, longitude stable',
+    north.lat > center.lat && Math.abs(north.lng - center.lng) < 0.0001);
+  check('cap est => longitude plus grande', east.lng > center.lng);
+  check('cap retrouvé depuis les deux points',
+    Math.abs(bearingDeg(center, east) - 90) < 0.5,
+    `${bearingDeg(center, east).toFixed(1)}°`);
+
+  // Quatre jalons doivent former un carré autour du centre.
+  const ring = [0, 90, 180, 270].map((a) => destinationPoint(center, a, 800));
+  const equidistant = ring.every((p) => Math.abs(haversineM(center, p) - 800) < 1);
+  check('les quatre jalons sont équidistants du départ', equidistant);
+}
+
+console.log('\n== Sélection des repères par ambiance ==');
+{
+  const scan = {
+    city: { name: 'X', displayName: 'X', lat: 45.9, lng: 6.13, bbox: [0, 0, 0, 0] as [number, number, number, number] },
+    pois: [
+      { ...makeCity(1)[0], id: 'p1', theme: 'Nature & Jardins' as PoiTheme, notoriety: 60 },
+      { ...makeCity(1)[0], id: 'p2', theme: 'Patrimoine & Histoire' as PoiTheme, notoriety: 70 },
+      { ...makeCity(1)[0], id: 'p3', theme: 'Nature & Jardins' as PoiTheme, notoriety: 10 },
+      { ...makeCity(1)[0], id: 'p4', theme: 'Panoramas & Points de vue' as PoiTheme, notoriety: 50 },
+    ],
+    cycleRoutes: [],
+    scannedAt: new Date().toISOString(),
+    notes: [],
+    excludedCount: 0,
+  };
+
+  const nature = anchorsFor(scan, 'nature');
+  check('ambiance nature : nature et panoramas uniquement',
+    nature.every(p => p.theme === 'Nature & Jardins' || p.theme === 'Panoramas & Points de vue'),
+    nature.map(p => p.id).join(','));
+  check('ambiance nature : les lieux mineurs écartés',
+    !nature.some(p => p.id === 'p3'), nature.map(p => p.id).join(','));
+
+  const heritage = anchorsFor(scan, 'heritage');
+  check('ambiance patrimoine : patrimoine retenu',
+    heritage.length === 1 && heritage[0].id === 'p2', heritage.map(p => p.id).join(','));
+
+  const any = anchorsFor(scan, 'any');
+  check('ambiance indifférente : tous les lieux notables',
+    any.length === 3, `${any.length}`);
 }
 
 console.log(failures === 0 ? '\nTous les tests passent.\n' : `\n${failures} test(s) en échec.\n`);

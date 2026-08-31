@@ -18,7 +18,9 @@ import {
   RouteConfig,
   SavedPack,
 } from './types';
+import { KindChoice } from './components/KindChoice';
 import { CitySearch } from './components/CitySearch';
+import { FreeConfigPanel } from './components/FreeConfigPanel';
 import { PoiInventory } from './components/PoiInventory';
 import { RouteConfigPanel } from './components/RouteConfigPanel';
 import { RouteSelection } from './components/RouteSelection';
@@ -33,10 +35,11 @@ import {
   suggestMissingPOIs,
 } from './services/geminiService';
 import { routeAll } from './services/routingService';
+import { planFreeRoutes } from './services/loopPlanner';
 import { exportPackToSupabase, isSupabaseConfigured } from './services/supabaseService';
 import { downloadPackJson } from './services/exporters';
 
-type View = 'city' | 'inventory' | 'config' | 'generating' | 'selection' | 'result';
+type View = 'kind' | 'city' | 'inventory' | 'config' | 'generating' | 'selection' | 'result';
 
 const INITIAL_FILTERS: PoiFilters = { themes: [], minNotoriety: 0, search: '' };
 
@@ -50,7 +53,7 @@ const readStored = <T,>(key: string, fallback: T): T => {
 };
 
 const App: React.FC = () => {
-  const [view, setView] = useState<View>('city');
+  const [view, setView] = useState<View>('kind');
   const [scan, setScan] = useState<CityScan | null>(null);
   const [filters, setFilters] = useState<PoiFilters>(INITIAL_FILTERS);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -112,15 +115,16 @@ const App: React.FC = () => {
       // Tout est retenu par défaut : c'est la capacité brute de la ville, à
       // l'utilisateur d'élaguer s'il le souhaite.
       setSelectedIds(new Set(result.pois.map((p) => p.id)));
-      setConfig((prev) => ({ ...prev, routeCount: null }));
-      setView('inventory');
+      // Un parcours libre n'a pas besoin de l'inventaire : la distance suffit.
+      setView(config.kind === 'free' ? 'config' : 'inventory');
+      if (config.kind === 'tour') setConfig((prev) => ({ ...prev, routeCount: null }));
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Le relevé des lieux a échoué.');
     } finally {
       setScanLoading(false);
     }
-  }, []);
+  }, [config.kind]);
 
   const handleCompleteWithAI = useCallback(async () => {
     if (!scan) return;
@@ -179,6 +183,42 @@ const App: React.FC = () => {
     // Le planificateur est synchrone et peut occuper le thread une seconde :
     // on laisse le navigateur peindre l'écran de chargement d'abord.
     await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Les boucles libres ont leur propre planificateur : la distance commande,
+    // le tracé est calculé directement par le routeur.
+    if (config.kind === 'free') {
+      setProgress('Tracé des boucles…');
+      const { routes: loops, failures } = await planFreeRoutes(scan, config, (done, total) =>
+        setProgress(`Tracé des boucles (${done}/${total})…`)
+      );
+
+      if (loops.length === 0) {
+        setError(
+          "Aucune boucle n'a pu être tracée. Le service d'itinéraires n'a pas répondu, ou le départ est trop isolé du réseau de rues."
+        );
+        setView('config');
+        return;
+      }
+
+      const loopPack: SavedPack = {
+        id: `pack-${Date.now()}`,
+        cityName: scan.city.name,
+        createdAt: new Date().toISOString(),
+        routes: loops,
+        config,
+      };
+      setError(
+        failures > 0
+          ? `${failures} boucle(s) sur ${failures + loops.length} n'ont pas abouti : le routeur n'a pas trouvé de circuit dans cette direction.`
+          : null
+      );
+      setRoutes(loops);
+      setActivePack(loopPack);
+      setPacks((prev) => [loopPack, ...prev].slice(0, 20));
+      setView('selection');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
 
     let planned = planRoutes(pool, scan.city.name, config);
 
@@ -291,17 +331,27 @@ const App: React.FC = () => {
   const currentCity = scan?.city.name ?? routes[0]?.summary.city ?? '';
 
   const resetToCity = () => {
-    setView('city');
+    setView('kind');
     setError(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const steps: { key: View; label: string }[] = [
-    { key: 'city', label: 'Ville' },
-    { key: 'inventory', label: 'Lieux' },
-    { key: 'config', label: 'Réglages' },
-    { key: 'selection', label: 'Parcours' },
-  ];
+  // Le parcours libre saute l'inventaire : son fil d'Ariane est plus court.
+  const steps: { key: View; label: string }[] =
+    config.kind === 'free'
+      ? [
+          { key: 'kind', label: 'Type' },
+          { key: 'city', label: 'Ville' },
+          { key: 'config', label: 'Réglages' },
+          { key: 'selection', label: 'Boucles' },
+        ]
+      : [
+          { key: 'kind', label: 'Type' },
+          { key: 'city', label: 'Ville' },
+          { key: 'inventory', label: 'Lieux' },
+          { key: 'config', label: 'Réglages' },
+          { key: 'selection', label: 'Parcours' },
+        ];
   const activeStep = view === 'generating' || view === 'result' ? 'selection' : view;
   const stepIndex = Math.max(0, steps.findIndex((s) => s.key === activeStep));
 
@@ -335,12 +385,12 @@ const App: React.FC = () => {
             ))}
           </nav>
 
-          {view !== 'city' && (
+          {view !== 'kind' && (
             <button
               onClick={resetToCity}
               className="text-sm font-medium text-gray-500 hover:text-nirmie-600 transition-colors flex-shrink-0"
             >
-              Nouvelle ville
+              Recommencer
             </button>
           )}
         </div>
@@ -358,6 +408,19 @@ const App: React.FC = () => {
               Fermer
             </button>
           </div>
+        )}
+
+        {view === 'kind' && (
+          <KindChoice
+            onChoose={(kind) => {
+              setConfig({ ...DEFAULT_ROUTE_CONFIG, kind });
+              setScan(null);
+              setRoutes([]);
+              setActivePack(null);
+              setView('city');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+          />
         )}
 
         {view === 'city' && (
@@ -480,7 +543,17 @@ const App: React.FC = () => {
           />
         )}
 
-        {view === 'config' && scan && (
+        {view === 'config' && scan && config.kind === 'free' && (
+          <FreeConfigPanel
+            scan={scan}
+            config={config}
+            onChange={(updates) => setConfig((prev) => ({ ...prev, ...updates }))}
+            onBack={() => setView('city')}
+            onGenerate={handleGenerate}
+          />
+        )}
+
+        {view === 'config' && scan && config.kind === 'tour' && (
           <RouteConfigPanel
             scan={scan}
             pool={pool}
