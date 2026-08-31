@@ -102,6 +102,41 @@ export const safetyExclusion = (tags: OsmTags): string | null => {
   if (tags.natural === 'sinkhole') return 'cavité naturelle';
   if (tags['seamark:type']) return 'site en mer';
 
+  // Dans l'eau. Un plan d'eau ou un cours d'eau a son point OSM au milieu de
+  // l'eau : un arrêt posé là envoie le joueur dans le fleuve. La plage et les
+  // berges aménagées restent admissibles, elles ne sont pas taguées ainsi.
+  if (tags.waterway && tags.waterway !== 'dam') return "au milieu de l'eau";
+  if (tags.natural === 'water' || tags.natural === 'strait' || tags.natural === 'bay') {
+    return "plan d'eau";
+  }
+  if (tags.landuse === 'reservoir' || tags.landuse === 'basin') return "bassin d'eau";
+  if (tags.historic === 'wreck') return 'épave (site immergé)';
+
+  // Voies ferrées, sous toutes leurs formes : on n'y pose jamais un arrêt.
+  const rail = tags.railway;
+  if (rail && rail !== 'station' && rail !== 'subway_entrance') {
+    return 'emprise ferroviaire';
+  }
+  if (tags.landuse === 'railway') return 'emprise ferroviaire';
+
+  // Voies de circulation : un arrêt au bord d'une route à trafic est un
+  // accident en puissance, et la piste cyclable n'est pas un lieu de halte.
+  const road = tags.highway;
+  if (
+    road &&
+    ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link']
+      .includes(road)
+  ) {
+    return 'voie à fort trafic';
+  }
+
+  // Terres agricoles : privées, et sans intérêt de visite.
+  if (['farmland', 'meadow', 'orchard', 'vineyard', 'greenhouse_horticulture', 'quarry']
+    .includes(tags.landuse || '')) {
+    return 'terrain agricole ou d\'extraction privé';
+  }
+  if (tags.natural === 'scrub' || tags.natural === 'wetland') return 'terrain non aménagé';
+
   // Lieux à l'abandon ou en chantier : structure instable, accès interdit.
   if (tags.abandoned === 'yes' || tags['abandoned:tourism'] || tags['abandoned:building']) {
     return "site à l'abandon";

@@ -36,10 +36,41 @@ géométrie :
    corrigé** — la forme ne bouge pas, ce qui fait converger en deux ou trois
    essais, à moins de 12 % de la cible.
 
-Le guidage vient des **noms de rues** que le routeur renvoie pour chaque jalon :
-« rue des Écoles », « avenue de la Libération ». Le promeneur sait où passer
-sans qu'aucun lieu remarquable n'existe. Une voie sans nom devient « Point de
-passage 3 ».
+### Où se posent les arrêts — la règle qui compte
+
+**Un arrêt se pose sur le tracé, jamais sur un point théorique.** C'est la règle
+centrale du mode libre, et elle n'admet pas d'exception.
+
+Les jalons de la forme tirée au hasard ne servent qu'à **donner sa silhouette à
+la boucle** : ce sont des points calculés à la boussole, « à 600 m au nord ». Un
+tel point tombe dans un fleuve, un champ, une voie ferrée ou une propriété
+privée une fois sur deux. Ils ne sont jamais montrés au joueur.
+
+Les arrêts sont **échantillonnés le long du chemin réellement calculé**, à
+intervalles réguliers. Un point du tracé est, par construction, sur une voie que
+le profil piéton d'OpenStreetMap accepte : praticable, publique, et à pied. Le
+départ lui-même est celui **accroché au réseau** par le routeur, pas la
+coordonnée demandée.
+
+Trois exclusions s'ajoutent, parce que le tracé ne suffit pas à tout écarter :
+
+| Écarté | Pourquoi |
+| --- | --- |
+| Tronçon en **bac** ou en **train** (`mode`) | Ne se marche pas — le parcours annoncé serait infaisable, et l'arrêt en pleine eau ou sur la voie |
+| **Route numérotée** (`ref` : A, N, D, M + chiffres) | On y marche sur le bas-côté, au bord de la circulation |
+| Voie sans nom **et** non praticable | Rien à quoi se raccrocher pour guider |
+
+Quand la position idéale tombe sur l'un de ces cas, l'arrêt est déplacé de part
+et d'autre, dans la limite de l'intervalle qui lui revient — assez pour
+contourner une longue traversée de départementale, jamais assez pour passer
+devant son voisin. **Si rien de convenable ne s'y trouve, l'arrêt n'est pas
+posé** : mieux vaut un repère de moins qu'un repère au bord d'une nationale. Un
+tracé qui n'en accepte aucun est rejeté et retenté à un autre rayon.
+
+Le guidage vient des **noms de rues** que le routeur renvoie pour la voie de
+chaque arrêt : « rue des Écoles », « avenue de la Libération ». Le promeneur
+sait où passer sans qu'aucun lieu remarquable n'existe. Une voie sans nom
+devient « Point de passage 3 ».
 
 Les boucles d'un même lot sont réparties dans des secteurs distincts, avec une
 part de hasard : elles partent dans des directions différentes, et **relancer
@@ -169,7 +200,18 @@ Chaque lieu passe un contrôle strict avant d'entrer dans l'inventaire
   cavités naturelles ;
 - **sites à l'abandon ou en travaux** : structures instables, accès interdits ;
 - **infrastructures actives** : passages à niveau, installations électriques,
-  ouvrages industriels.
+  ouvrages industriels ;
+- **dans l'eau** : `waterway=*` (hors barrages visitables), `natural=water`,
+  baies, détroits, bassins et retenues, épaves. Un plan d'eau a son point OSM au
+  milieu de l'eau : un arrêt posé là envoie le joueur dans le fleuve. Les
+  plages et les berges aménagées ne sont pas taguées ainsi et restent admises ;
+- **emprises ferroviaires** : tout tag `railway` hors gare et bouche de métro,
+  et `landuse=railway` ;
+- **voies à fort trafic** : `highway` en `motorway`, `trunk`, `primary`,
+  `secondary` et leurs bretelles — on ne fait pas s'arrêter quelqu'un au bord
+  d'une nationale ;
+- **terres agricoles et friches** : `farmland`, `meadow`, `orchard`, `vineyard`,
+  serres, carrières, `scrub`, `wetland` — privées, et sans intérêt de visite.
 
 Dans le doute, on écarte. Le nombre de lieux exclus est affiché sur l'écran
 d'inventaire. Ces règles s'appuient sur les tags OpenStreetMap : un lieu mal

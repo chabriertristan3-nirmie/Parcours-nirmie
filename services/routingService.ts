@@ -19,10 +19,28 @@ const MAX_STOPS_PER_REQUEST = 100;
 
 const REQUEST_TIMEOUT_MS = 20000;
 
+/**
+ * Une manœuvre du routeur : une portion de tracé sur une seule voie.
+ *
+ * C'est ce qui permet de savoir sur quoi l'on marche à un endroit donné du
+ * parcours — condition pour n'y poser un arrêt que si la voie s'y prête.
+ */
+export interface RoutedManeuver {
+  /** Nom de la voie. Vide pour un chemin sans nom. */
+  name: string;
+  /** Numéro de route quand il y en a un : « D 6007 », « N 7 ». */
+  ref: string;
+  /** `walking`, `cycling`, `ferry`, `train`… Tout ce qui n'est pas à pied ou à vélo est rejeté. */
+  mode: string;
+  path: PathPoint[];
+}
+
 export interface RoutedLeg {
   distanceM: number;
   durationS: number;
   path: PathPoint[];
+  /** Le détail voie par voie du même tracé, dans l'ordre. */
+  maneuvers: RoutedManeuver[];
 }
 
 export interface RoutedPath {
@@ -93,15 +111,21 @@ export const fetchRoutedPath = async (
     const route = json.routes[0];
     const legs: RoutedLeg[] = (route.legs || []).map((leg: any) => {
       // Le tracé fin d'un segment est la suite de ses manœuvres.
-      const segments: PathPoint[][] = (leg.steps || [])
-        .map((step: any) => step.geometry?.coordinates)
-        .filter(Boolean)
-        .map((c: [number, number][]) => toPathPoints(c));
+      const maneuvers: RoutedManeuver[] = (leg.steps || [])
+        .filter((step: any) => step.geometry?.coordinates)
+        .map((step: any) => ({
+          name: String(step.name ?? '').trim(),
+          ref: String(step.ref ?? '').trim(),
+          mode: String(step.mode ?? 'walking').trim(),
+          path: toPathPoints(step.geometry.coordinates),
+        }))
+        .filter((m: RoutedManeuver) => m.path.length >= 2);
 
       return {
         distanceM: Math.round(leg.distance ?? 0),
         durationS: Math.round(leg.duration ?? 0),
-        path: concatSegments(segments),
+        path: concatSegments(maneuvers.map((m) => m.path)),
+        maneuvers,
       };
     });
 

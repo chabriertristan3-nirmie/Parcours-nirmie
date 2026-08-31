@@ -22,6 +22,14 @@ import {
 } from '../types';
 import { destinationPoint, haversineM, tracePathLengthM } from './geo';
 import { fetchRoutedPath } from './routingService';
+import {
+  buildTrace,
+  PlacedStop,
+  placeStops,
+  sliceTrace,
+  Trace,
+  usesForbiddenMode,
+} from './stopPlacement';
 
 /** Écart accepté entre la distance obtenue et celle demandée. */
 const DISTANCE_TOLERANCE = 0.12;
@@ -246,12 +254,15 @@ const fallbackStarts = (anchor: StartPoint, city: CityInfo): StartPoint[] => {
 const MAX_SNAP_M = 1500;
 
 interface LoopAttempt {
-  path: PathPoint[];
+  /** Le tracé mesuré, seule source des arrêts et de leur position. */
+  trace: Trace;
   distanceM: number;
-  waypointNames: string[];
   /** Nom de la voie du départ, tel qu'accroché par le routeur. */
   startName: string;
-  waypoints: { lat: number; lng: number }[];
+  /** Départ tel qu'accroché au réseau — jamais le point théorique demandé. */
+  snappedStart: { lat: number; lng: number };
+  /** Arrêts retenus, tous posés sur le tracé et sur une voie convenable. */
+  stops: PlacedStop[];
   error: number;
 }
 
@@ -287,18 +298,40 @@ const planOneLoop = async (
       return null;
     }
 
-    const path = routed.legs.flatMap((leg, i) => (i === 0 ? leg.path : leg.path.slice(1)));
+    const maneuvers = routed.legs.flatMap((leg) => leg.maneuvers);
+
+    // Un bac ou un tronçon en train ne se marche pas : la boucle annoncée
+    // serait infaisable. On laisse l'ajustement du rayon retenter, un autre
+    // rayon empruntant souvent un autre itinéraire.
+    if (usesForbiddenMode(maneuvers)) {
+      radiusM *= 0.85;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      continue;
+    }
+
+    const trace = buildTrace(maneuvers);
+    if (trace.points.length < 2) return best;
+
+    // Aucun endroit convenable où s'arrêter sur tout le circuit : il longe des
+    // voies à trafic d'un bout à l'autre. On ne le garde pas — un autre rayon
+    // passera ailleurs.
+    const stops = placeStops(trace, shape.waypointCount);
+    if (stops.length === 0) {
+      radiusM *= 0.85;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      continue;
+    }
+
     const error = Math.abs(routed.totalDistanceM - targetM) / targetM;
 
     if (!best || error < best.error) {
       best = {
-        path,
+        trace,
         distanceM: routed.totalDistanceM,
-        // Le premier et le dernier point envoyés sont le départ : on ne garde
-        // que les jalons intermédiaires.
-        waypointNames: routed.waypointNames.slice(1, -1),
         startName: routed.waypointNames[0] ?? '',
-        waypoints,
+        snappedStart:
+          snapped && Number.isFinite(snapped.lat) ? snapped : { lat: start.lat, lng: start.lng },
+        stops,
         error,
       };
     }
@@ -311,34 +344,17 @@ const planOneLoop = async (
   return best;
 };
 
-/**
- * Position d'un point le long du tracé : indice du point de tracé le plus
- * proche, cherché à partir de `from` pour respecter l'ordre du parcours.
- */
-const nearestPathIndex = (
-  path: PathPoint[],
-  point: { lat: number; lng: number },
-  from: number
-): number => {
-  let bestIndex = from;
-  let bestDist = Infinity;
-  for (let i = from; i < path.length; i++) {
-    const d = (path[i][0] - point.lat) ** 2 + (path[i][1] - point.lng) ** 2;
-    if (d < bestDist) {
-      bestDist = d;
-      bestIndex = i;
-    }
-  }
-  return bestIndex;
-};
-
-/** Étiquette d'un jalon : le nom de la rue, ou un repère de secours. */
-const waypointLabel = (name: string, index: number): string =>
-  name && name.length > 1 ? name : `Point de passage ${index}`;
+/** Étiquette d'un arrêt : le nom de la voie, ou un repère de secours. */
+const stopLabel = (street: string, index: number): string =>
+  street && street.length > 1 ? street : `Point de passage ${index}`;
 
 /**
- * Construit les étapes d'une boucle : le départ, puis chaque jalon nommé par
- * sa rue, mesuré le long du tracé.
+ * Construit les étapes d'une boucle : le départ, puis les arrêts.
+ *
+ * Tous sont pris **sur le tracé** : le départ à l'endroit où le routeur
+ * l'accroche au réseau, les arrêts à des positions réparties le long du
+ * chemin réellement parcouru. Aucun ne peut donc tomber ailleurs que sur une
+ * voie praticable à pied.
  */
 const buildLoopSteps = (
   start: StartPoint,
@@ -379,26 +395,23 @@ const buildLoopSteps = (
     ),
   ];
 
-  let cursor = 0;
-  attempt.waypoints.forEach((waypoint, i) => {
-    const index = nearestPathIndex(attempt.path, waypoint, cursor);
-    const segment = attempt.path.slice(cursor, index + 1);
-    cursor = index;
-
+  let previousM = 0;
+  attempt.stops.forEach((stop, i) => {
     steps.push(
       asStep(
         {
-          id: `wp-${i}-${Math.round(waypoint.lat * 1e5)}-${Math.round(waypoint.lng * 1e5)}`,
-          name: waypointLabel(attempt.waypointNames[i] ?? '', i + 2),
+          id: `wp-${i}-${Math.round(stop.lat * 1e5)}-${Math.round(stop.lng * 1e5)}`,
+          name: stopLabel(stop.streetName, i + 2),
           theme: 'Places & Vie locale',
           subtype: 'Jalon',
-          lat: waypoint.lat,
-          lng: waypoint.lng,
+          lat: stop.lat,
+          lng: stop.lng,
         },
         i + 2,
-        segment
+        sliceTrace(attempt.trace, previousM, stop.distanceM)
       )
     );
+    previousM = stop.distanceM;
   });
 
   return steps;
@@ -443,7 +456,7 @@ export const planFreeRoutes = async (
     let start = anchors[i];
     for (const candidate of fallbackStarts(anchors[i], city)) {
       attempt = await planOneLoop(candidate, config, shape);
-      if (attempt && attempt.path.length >= 2) {
+      if (attempt && attempt.trace.points.length >= 2) {
         start = candidate;
         break;
       }
@@ -456,7 +469,12 @@ export const planFreeRoutes = async (
       continue;
     }
 
-    start = { ...start, label: startLabelWithStreet(start, attempt.startName) };
+    // Le départ affiché est celui accroché au réseau, pas le point théorique :
+    // c'est là que le promeneur se tiendra réellement.
+    start = {
+      ...attempt.snappedStart,
+      label: startLabelWithStreet(start, attempt.startName),
+    };
     const steps = buildLoopSteps(start, attempt, config);
     const distanceKm = Math.round((attempt.distanceM / 1000) * 10) / 10;
     const walkingMinutes = Math.round((attempt.distanceM / 1000 / config.paceKmh) * 60);
@@ -478,7 +496,7 @@ export const planFreeRoutes = async (
         loop: true,
       },
       steps,
-      path: attempt.path,
+      path: attempt.trace.points,
       geometrySource: 'osrm',
     });
   }

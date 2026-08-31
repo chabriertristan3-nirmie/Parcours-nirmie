@@ -11,6 +11,13 @@ import { safetyExclusion } from '../services/osmService';
 import { pickModel, describeApiError } from '../services/geminiService';
 import { applyRoutedPath, straightPath } from '../services/routingService';
 import {
+  buildTrace,
+  isNumberedRoad,
+  placeStops,
+  sliceTrace,
+  usesForbiddenMode,
+} from '../services/stopPlacement';
+import {
   makeRng,
   randomLoopShape,
   sectorName,
@@ -280,6 +287,14 @@ console.log('\n== Tracé par les rues ==');
       distanceM: Math.round(haversineM(from, step) * 1.4),
       durationS: 400,
       path: [[from.lat, from.lng], midpoint, [step.lat, step.lng]] as [number, number][],
+      maneuvers: [
+        {
+          name: `rue ${i + 1}`,
+          ref: '',
+          mode: 'walking',
+          path: [[from.lat, from.lng], midpoint, [step.lat, step.lng]] as [number, number][],
+        },
+      ],
     };
   });
   const totalDistanceM = legs.reduce((sum, l) => sum + l.distanceM, 0);
@@ -688,6 +703,132 @@ console.log('\n== Parcours libres : départs répartis dans la commune ==');
   const longGap = haversineM(longLoops[0], longLoops[1]);
   check('des boucles plus longues écartent davantage les départs',
     longGap > Math.min(...tinyGaps), `${Math.round(longGap)} m contre ${Math.round(Math.min(...tinyGaps))} m`);
+}
+
+console.log('\n== Parcours libres : où se posent les arrêts ==');
+{
+  // Un tracé réaliste : un chemin de parc, un pont sur une départementale, un
+  // bord de fleuve, une rue. Chaque manœuvre fait ~200 m.
+  const leg = (name: string, ref: string, mode: string, fromLat: number, toLat: number) => ({
+    name, ref, mode,
+    path: [[fromLat, 7.12], [(fromLat + toLat) / 2, 7.12], [toLat, 7.12]] as [number, number][],
+  });
+  const maneuvers = [
+    leg('allée des Tilleuls', '', 'walking', 43.5800, 43.5818),
+    leg('', 'D 6007', 'walking', 43.5818, 43.5836),
+    leg('quai de la Sèvre', '', 'walking', 43.5836, 43.5854),
+    leg('rue du Marché', '', 'walking', 43.5854, 43.5872),
+  ];
+
+  const trace = buildTrace(maneuvers);
+  check('le tracé est mesuré de bout en bout',
+    trace.points.length === 9 && Math.abs(trace.totalM - 800) < 20,
+    `${trace.points.length} points, ${Math.round(trace.totalM)} m`);
+  check('les jonctions entre manœuvres ne sont pas comptées deux fois',
+    new Set(trace.points.map(p => p.join(','))).size === trace.points.length);
+
+  const onTrace = (p: { lat: number; lng: number }) =>
+    trace.points.some(q => haversineM({ lat: q[0], lng: q[1] }, p) < 1);
+
+  // Le cœur du correctif : un arrêt est un point DU TRACÉ, pas un point
+  // théorique posé à la boussole qui tomberait dans le fleuve ou un champ.
+  const stops = placeStops(trace, 3);
+  check('trois arrêts posés', stops.length === 3);
+  check('chaque arrêt est sur le tracé, donc sur une voie praticable',
+    stops.every(onTrace), stops.map(s => s.streetName || '(sans nom)').join(' · '));
+  check('les arrêts sont répartis, pas groupés',
+    stops.every((s, i) => i === 0 || s.distanceM - stops[i - 1].distanceM > trace.totalM / 8),
+    stops.map(s => `${Math.round(s.distanceM)} m`).join(', '));
+  check('aucun arrêt sur le départ ni sur l\'arrivée',
+    stops.every(s => s.distanceM > 0 && s.distanceM < trace.totalM));
+
+  // La départementale traverse le tracé : aucun arrêt ne doit y tomber.
+  const onRoad = (s: { lat: number }) => s.lat > 43.5818 && s.lat < 43.5836;
+  check('aucun arrêt sur la départementale',
+    !stops.some(onRoad),
+    stops.map(s => s.lat.toFixed(4)).join(', '));
+
+  check('une route numérotée est reconnue',
+    ['D 6007', 'N7', 'A 8', 'M 6007'].every(isNumberedRoad) &&
+    !isNumberedRoad('') && !isNumberedRoad('rue du Marché'));
+
+  // Un tracé qui prend le bac ou le train n'est pas une boucle à pied.
+  check('un tronçon en bac est détecté',
+    usesForbiddenMode([...maneuvers, leg('bac', '', 'ferry', 43.587, 43.589)]));
+  check('un tronçon en train est détecté',
+    usesForbiddenMode([leg('ligne', '', 'train', 43.58, 43.59)]));
+  check('un parcours entièrement à pied passe',
+    !usesForbiddenMode(maneuvers));
+
+  // Une longue traversée de départementale, plus large que la moitié d'un
+  // intervalle : la recherche doit tout de même en sortir.
+  const crossing = buildTrace([
+    leg('rue des Halles', '', 'walking', 43.5800, 43.5820),
+    leg('', 'D 6007', 'walking', 43.5820, 43.5880),
+    leg('chemin du Bois', '', 'walking', 43.5880, 43.5900),
+  ]);
+  const crossed = placeStops(crossing, 1);
+  check('une longue départementale est contournée, pas subie',
+    crossed.length === 1 && (crossed[0].lat <= 43.5820 || crossed[0].lat >= 43.5880),
+    `arrêt à ${Math.round(crossed[0].distanceM)} m sur ${crossed[0].streetName || '(sans nom)'}`);
+
+  // Tout le tracé est une départementale : aucun arrêt n'est posé. La règle
+  // prime sur le remplissage — l'appelant rejette alors la boucle.
+  const allRoad = buildTrace([leg('', 'D 12', 'walking', 43.58, 43.60)]);
+  check('tracé entièrement à trafic : aucun arrêt posé',
+    placeStops(allRoad, 3).length === 0);
+
+  // Un point de jonction appartient à la voie que l'on aborde, pas à celle que
+  // l'on quitte — sinon le début de chaque rue hériterait du nom de la
+  // précédente, et de son interdiction.
+  const junction = trace.maneuverOf[trace.cumulativeM.findIndex(c => c >= 600)];
+  check('les jonctions sont attribuées à la voie abordée',
+    trace.maneuvers[junction].name === 'rue du Marché',
+    trace.maneuvers[junction].name);
+
+  // Les segments entre arrêts doivent couvrir le tracé sans trou : c'est ce
+  // que suit le mode live de l'application.
+  const slices = stops.map((s, i) =>
+    sliceTrace(trace, i === 0 ? 0 : stops[i - 1].distanceM, s.distanceM));
+  check('les segments entre arrêts suivent le tracé',
+    slices.every(sl => sl.length >= 2) &&
+    Math.abs(slices.reduce((sum, sl) => sum + tracePathLengthM(sl), 0) -
+      stops[stops.length - 1].distanceM) < 5,
+    slices.map(sl => `${Math.round(tracePathLengthM(sl))} m`).join(' + '));
+  check('chaque segment démarre où le précédent s\'arrête',
+    slices.every((sl, i) => i === 0 ||
+      haversineM(
+        { lat: slices[i - 1][slices[i - 1].length - 1][0], lng: slices[i - 1][slices[i - 1].length - 1][1] },
+        { lat: sl[0][0], lng: sl[0][1] }) < 1));
+}
+
+console.log('\n== Règles de sécurité : eau, rail, routes, champs ==');
+{
+  const excluded = (tags: Record<string, string>) => safetyExclusion(tags) !== null;
+
+  check('un cours d\'eau est écarté', excluded({ waterway: 'river', name: 'La Sèvre' }));
+  check('un plan d\'eau est écarté', excluded({ natural: 'water', name: 'Étang' }));
+  check('un bassin est écarté', excluded({ landuse: 'reservoir', name: 'Retenue' }));
+  check('une épave est écartée', excluded({ historic: 'wreck', name: 'Épave' }));
+  check('une voie ferrée est écartée', excluded({ railway: 'rail' }));
+  check('un quai de gare est écarté', excluded({ railway: 'platform' }));
+  check('une emprise ferroviaire est écartée', excluded({ landuse: 'railway' }));
+  check('une nationale est écartée', excluded({ highway: 'trunk', name: 'N 7' }));
+  check('une départementale à trafic est écartée', excluded({ highway: 'primary' }));
+  check('un champ est écarté', excluded({ landuse: 'farmland' }));
+  check('une vigne est écartée', excluded({ landuse: 'vineyard' }));
+  check('une carrière est écartée', excluded({ landuse: 'quarry' }));
+  check('une friche est écartée', excluded({ natural: 'scrub' }));
+
+  // …sans écarter ce qui doit rester : les règles seraient inutiles si elles
+  // vidaient l'inventaire.
+  check('un musée passe', !excluded({ tourism: 'museum', name: 'Musée Picasso' }));
+  check('une plage passe', !excluded({ natural: 'beach', name: 'Plage de la Salis' }));
+  check('un parc passe', !excluded({ leisure: 'park', name: 'Jardin Thuret' }));
+  check('une gare patrimoniale passe',
+    !excluded({ railway: 'station', historic: 'building', name: 'Gare de 1863' }));
+  check('un barrage visitable passe', !excluded({ waterway: 'dam', name: 'Barrage' }));
+  check('une rue piétonne passe', !excluded({ highway: 'pedestrian', name: 'Rue Sainte' }));
 }
 
 console.log(failures === 0 ? '\nTous les tests passent.\n' : `\n${failures} test(s) en échec.\n`);
