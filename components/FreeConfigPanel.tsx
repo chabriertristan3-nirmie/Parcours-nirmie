@@ -1,33 +1,26 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import {
   ArrowLeft,
   Bike,
   Crosshair,
   Footprints,
   Gauge,
-  Layers,
   Loader2,
   MapPin,
   Repeat,
   Ruler,
   Search,
+  Shuffle,
   Wand2,
 } from 'lucide-react';
-import {
-  AMBIENCE_LABELS,
-  Ambience,
-  CityScan,
-  MODE_PRESETS,
-  RouteConfig,
-  TravelMode,
-} from '../types';
+import { CityInfo, MODE_PRESETS, RouteConfig, TravelMode } from '../types';
 import { formatDuration } from '../services/geo';
-import { anchorsFor, loopCountFor, startPointFor } from '../services/loopPlanner';
+import { loopCountFor, startPointFor } from '../services/loopPlanner';
 import { geocodeCity } from '../services/osmService';
 import { MapView } from './MapView';
 
 interface Props {
-  scan: CityScan;
+  city: CityInfo;
   config: RouteConfig;
   onChange: (updates: Partial<RouteConfig>) => void;
   onBack: () => void;
@@ -35,7 +28,7 @@ interface Props {
 }
 
 export const FreeConfigPanel: React.FC<Props> = ({
-  scan,
+  city,
   config,
   onChange,
   onBack,
@@ -46,12 +39,7 @@ export const FreeConfigPanel: React.FC<Props> = ({
   const [addressError, setAddressError] = useState<string | null>(null);
 
   const preset = MODE_PRESETS[config.travelMode];
-  const anchors = useMemo(
-    () => anchorsFor(scan, config.ambience),
-    [scan, config.ambience]
-  );
-
-  const start = startPointFor(scan, config);
+  const start = startPointFor(city, config);
   const effortMinutes = (config.targetDistanceKm / config.paceKmh) * 60;
   const loopCount = loopCountFor(config);
 
@@ -80,7 +68,7 @@ export const FreeConfigPanel: React.FC<Props> = ({
             label: 'Ma position',
           },
         }),
-      () => setAddressError("Position refusée ou indisponible.")
+      () => setAddressError('Position refusée ou indisponible.')
     );
   };
 
@@ -93,11 +81,11 @@ export const FreeConfigPanel: React.FC<Props> = ({
     setAddressError(null);
     try {
       // On ancre la recherche sur la ville pour éviter les homonymes.
-      const place = await geocodeCity(`${query}, ${scan.city.name}`);
+      const place = await geocodeCity(`${query}, ${city.name}`);
       onChange({ start: { lat: place.lat, lng: place.lng, label: place.name || query } });
       setAddressQuery('');
     } catch {
-      setAddressError("Adresse introuvable dans cette ville.");
+      setAddressError('Adresse introuvable dans cette ville.');
     } finally {
       setAddressLoading(false);
     }
@@ -115,7 +103,7 @@ export const FreeConfigPanel: React.FC<Props> = ({
       {/* Résumé ------------------------------------------------------------ */}
       <div className="bg-gradient-to-br from-blue-500 to-blue-600 text-white rounded-3xl p-6 shadow-lg">
         <p className="text-[11px] font-black uppercase tracking-widest text-blue-100 mb-4">
-          Parcours libre à {scan.city.name}
+          Parcours libre à {city.name}
         </p>
         <div className="flex flex-wrap items-end gap-x-10 gap-y-4">
           <div>
@@ -124,7 +112,7 @@ export const FreeConfigPanel: React.FC<Props> = ({
               <span className="text-2xl ml-1 font-bold text-blue-100">km</span>
             </p>
             <p className="text-xs font-bold text-blue-100 mt-2">
-              {loopCount} boucle{loopCount > 1 ? 's' : ''} à générer
+              {loopCount} boucle{loopCount > 1 ? 's' : ''} à tracer
             </p>
           </div>
           <div className="space-y-1 text-sm">
@@ -132,19 +120,19 @@ export const FreeConfigPanel: React.FC<Props> = ({
               ~<strong>{formatDuration(effortMinutes)}</strong> de{' '}
               {config.travelMode === 'bike' ? 'vélo' : 'marche'}, sans arrêt
             </p>
-            <p className="text-blue-100/80 text-xs">
-              Départ : {start.label}
-            </p>
+            <p className="text-blue-100/80 text-xs">Départ : {start.label}</p>
           </div>
         </div>
-        <p className="text-[11px] text-blue-100/70 mt-4 leading-relaxed max-w-xl">
-          La distance obtenue peut s'écarter de quelques centaines de mètres : le
-          circuit suit les rues existantes, pas un cercle parfait.
+        <p className="text-[11px] text-blue-100/70 mt-4 leading-relaxed max-w-2xl">
+          Ce mode n'utilise aucun lieu touristique : les boucles sont tracées au
+          hasard sur le réseau de rues, et fonctionnent donc partout, même là où il
+          n'y a rien à visiter. La distance obtenue s'écarte de quelques centaines
+          de mètres — un circuit suit les rues existantes, pas un cercle parfait.
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Colonne gauche ------------------------------------------------- */}
+        {/* Colonne gauche : l'effort ------------------------------------- */}
         <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-6 space-y-7">
           <div className="grid grid-cols-2 gap-3">
             {(
@@ -175,11 +163,11 @@ export const FreeConfigPanel: React.FC<Props> = ({
                 Longueur de la boucle
               </h3>
               <p className="text-[11px] text-gray-400 mt-1 ml-6">
-                La cible visée. C'est le réglage principal de ce mode.
+                C'est le seul réglage qui compte vraiment dans ce mode.
               </p>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-gray-500">Distance</span>
+              <span className="text-xs font-bold text-gray-500">Distance visée</span>
               <span className="text-lg font-black text-blue-600">
                 {config.targetDistanceKm} km
               </span>
@@ -244,7 +232,7 @@ export const FreeConfigPanel: React.FC<Props> = ({
               </p>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-gray-500">À générer</span>
+              <span className="text-xs font-bold text-gray-500">À tracer</span>
               <span className="text-lg font-black text-blue-600">{loopCount}</span>
             </div>
             <input
@@ -258,8 +246,8 @@ export const FreeConfigPanel: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Colonne droite ------------------------------------------------- */}
-        <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-6 space-y-7">
+        {/* Colonne droite : le départ ------------------------------------ */}
+        <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-6 space-y-6">
           <div className="space-y-3">
             <div>
               <h3 className="flex items-center gap-2 text-sm font-black text-gray-700 uppercase tracking-wide">
@@ -267,7 +255,7 @@ export const FreeConfigPanel: React.FC<Props> = ({
                 Point de départ
               </h3>
               <p className="text-[11px] text-gray-400 mt-1 ml-6">
-                La boucle part d'ici et y revient.
+                Chaque boucle part d'ici et y revient.
               </p>
             </div>
 
@@ -288,72 +276,32 @@ export const FreeConfigPanel: React.FC<Props> = ({
               )}
             </div>
 
-            <div className="grid grid-cols-1 gap-2">
-              <button
-                onClick={useMyPosition}
-                className="py-2.5 rounded-xl border-2 border-gray-100 text-xs font-bold text-gray-500 hover:border-blue-300 hover:text-blue-600 transition-colors flex items-center justify-center gap-2"
-              >
-                <Crosshair className="w-3.5 h-3.5" /> Utiliser ma position
-              </button>
+            <button
+              onClick={useMyPosition}
+              className="w-full py-2.5 rounded-xl border-2 border-gray-100 text-xs font-bold text-gray-500 hover:border-blue-300 hover:text-blue-600 transition-colors flex items-center justify-center gap-2"
+            >
+              <Crosshair className="w-3.5 h-3.5" /> Utiliser ma position
+            </button>
 
-              <form onSubmit={searchAddress} className="relative">
-                <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={addressQuery}
-                  onChange={(e) => setAddressQuery(e.target.value)}
-                  placeholder="Une adresse, un quartier…"
-                  className="w-full pl-10 pr-20 py-2.5 rounded-xl bg-gray-50 border border-gray-200 focus:border-blue-500 outline-none text-sm"
-                />
-                <button
-                  type="submit"
-                  disabled={addressLoading || !addressQuery.trim()}
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-[11px] font-bold disabled:opacity-40"
-                >
-                  {addressLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Situer'}
-                </button>
-              </form>
-            </div>
+            <form onSubmit={searchAddress} className="relative">
+              <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={addressQuery}
+                onChange={(e) => setAddressQuery(e.target.value)}
+                placeholder="Une adresse, un quartier…"
+                className="w-full pl-10 pr-20 py-2.5 rounded-xl bg-gray-50 border border-gray-200 focus:border-blue-500 outline-none text-sm"
+              />
+              <button
+                type="submit"
+                disabled={addressLoading || !addressQuery.trim()}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-[11px] font-bold disabled:opacity-40"
+              >
+                {addressLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Situer'}
+              </button>
+            </form>
 
             {addressError && <p className="text-[11px] text-red-600">{addressError}</p>}
-          </div>
-
-          <div className="h-px bg-gray-100" />
-
-          <div className="space-y-3">
-            <div>
-              <h3 className="flex items-center gap-2 text-sm font-black text-gray-700 uppercase tracking-wide">
-                <Layers className="w-4 h-4 text-blue-500" />
-                Ambiance
-              </h3>
-              <p className="text-[11px] text-gray-400 mt-1 ml-6">
-                Vers quoi attirer la boucle. Ces lieux sont traversés, pas visités.
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              {(Object.keys(AMBIENCE_LABELS) as Ambience[]).map((ambience) => (
-                <button
-                  key={ambience}
-                  onClick={() => onChange({ ambience })}
-                  className={`w-full p-3 rounded-2xl border-2 text-left transition-all ${
-                    config.ambience === ambience
-                      ? 'border-blue-500 bg-blue-50'
-                      : 'border-gray-100 hover:border-gray-200'
-                  }`}
-                >
-                  <p className="text-sm font-bold text-gray-800">
-                    {AMBIENCE_LABELS[ambience].label}
-                  </p>
-                  <p className="text-[10px] text-gray-500">{AMBIENCE_LABELS[ambience].hint}</p>
-                </button>
-              ))}
-            </div>
-
-            <p className="text-[11px] text-gray-400">
-              {anchors.length} lieu{anchors.length > 1 ? 'x' : ''} peu{anchors.length > 1 ? 'vent' : 't'}{' '}
-              orienter la boucle avec ce choix.
-            </p>
           </div>
 
           <div className="rounded-2xl overflow-hidden border border-gray-100">
@@ -370,10 +318,18 @@ export const FreeConfigPanel: React.FC<Props> = ({
                   visitMinutes: 0,
                   source: 'manual',
                 },
-                ...anchors.slice(0, 60),
               ]}
               className="w-full h-56"
             />
+          </div>
+
+          <div className="bg-gray-50 border border-gray-100 rounded-2xl p-4 flex items-start gap-3">
+            <Shuffle className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
+            <p className="text-[11px] text-gray-500 leading-relaxed">
+              Les boucles sont tirées au hasard : forme, orientation et nombre de
+              jalons changent à chaque génération. Relancez pour en obtenir
+              d'autres avec les mêmes réglages.
+            </p>
           </div>
         </div>
       </div>
@@ -383,7 +339,7 @@ export const FreeConfigPanel: React.FC<Props> = ({
         className="w-full py-5 rounded-2xl bg-blue-600 text-white text-lg font-bold shadow-lg hover:bg-blue-700 active:scale-[0.99] transition-all flex items-center justify-center gap-3"
       >
         <Wand2 className="w-6 h-6" />
-        Générer {loopCount} boucle{loopCount > 1 ? 's' : ''} de {config.targetDistanceKm} km
+        Tracer {loopCount} boucle{loopCount > 1 ? 's' : ''} de {config.targetDistanceKm} km
       </button>
     </div>
   );

@@ -10,6 +10,7 @@ import {
   Wand2,
 } from 'lucide-react';
 import {
+  CityInfo,
   CityScan,
   DEFAULT_ROUTE_CONFIG,
   GeneratedRoute,
@@ -25,7 +26,7 @@ import { PoiInventory } from './components/PoiInventory';
 import { RouteConfigPanel } from './components/RouteConfigPanel';
 import { RouteSelection } from './components/RouteSelection';
 import { ResultsView } from './components/ResultsView';
-import { clearScanCache, dedupePois, scanCity } from './services/osmService';
+import { clearScanCache, dedupePois, geocodeCity, scanCity } from './services/osmService';
 import { applyFilters, computeCapacity, planRoutes } from './services/routePlanner';
 import {
   describeApiError,
@@ -55,6 +56,11 @@ const readStored = <T,>(key: string, fallback: T): T => {
 const App: React.FC = () => {
   const [view, setView] = useState<View>('kind');
   const [scan, setScan] = useState<CityScan | null>(null);
+  /**
+   * Ville d'un parcours libre. Ce mode n'inventorie aucun lieu : il lui suffit
+   * de savoir où est la ville, ce qui tient en une requête de géocodage.
+   */
+  const [freeCity, setFreeCity] = useState<CityInfo | null>(null);
   const [filters, setFilters] = useState<PoiFilters>(INITIAL_FILTERS);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [config, setConfig] = useState<RouteConfig>(DEFAULT_ROUTE_CONFIG);
@@ -104,27 +110,38 @@ const App: React.FC = () => {
   // Étape 1 : inventaire de la ville
   // -----------------------------------------------------------------------
 
-  const handleScan = useCallback(async (cityName: string, force = false) => {
-    setScanLoading(true);
-    setError(null);
-    try {
-      if (force) clearScanCache(cityName);
-      const result = await scanCity(cityName, force);
-      setScan(result);
-      setFilters(INITIAL_FILTERS);
-      // Tout est retenu par défaut : c'est la capacité brute de la ville, à
-      // l'utilisateur d'élaguer s'il le souhaite.
-      setSelectedIds(new Set(result.pois.map((p) => p.id)));
-      // Un parcours libre n'a pas besoin de l'inventaire : la distance suffit.
-      setView(config.kind === 'free' ? 'config' : 'inventory');
-      if (config.kind === 'tour') setConfig((prev) => ({ ...prev, routeCount: null }));
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Le relevé des lieux a échoué.');
-    } finally {
-      setScanLoading(false);
-    }
-  }, [config.kind]);
+  const handleScan = useCallback(
+    async (cityName: string, force = false) => {
+      setScanLoading(true);
+      setError(null);
+      try {
+        // Un parcours libre se moque des lieux : on localise la ville, un point.
+        // C'est ce qui le rend instantané, et utilisable là où il n'y a rien.
+        if (config.kind === 'free') {
+          setFreeCity(await geocodeCity(cityName));
+          setView('config');
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+          return;
+        }
+
+        if (force) clearScanCache(cityName);
+        const result = await scanCity(cityName, force);
+        setScan(result);
+        setFilters(INITIAL_FILTERS);
+        // Tout est retenu par défaut : c'est la capacité brute de la ville, à
+        // l'utilisateur d'élaguer s'il le souhaite.
+        setSelectedIds(new Set(result.pois.map((p) => p.id)));
+        setConfig((prev) => ({ ...prev, routeCount: null }));
+        setView('inventory');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Le relevé des lieux a échoué.');
+      } finally {
+        setScanLoading(false);
+      }
+    },
+    [config.kind]
+  );
 
   const handleCompleteWithAI = useCallback(async () => {
     if (!scan) return;
@@ -173,22 +190,17 @@ const App: React.FC = () => {
   // -----------------------------------------------------------------------
 
   const handleGenerate = useCallback(async () => {
-    if (!scan) return;
-
     setView('generating');
     setError(null);
-    setProgress('Composition des parcours…');
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
-    // Le planificateur est synchrone et peut occuper le thread une seconde :
-    // on laisse le navigateur peindre l'écran de chargement d'abord.
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    // Les boucles libres ont leur propre planificateur : la distance commande,
-    // le tracé est calculé directement par le routeur.
+    // Les boucles libres ont leur propre planificateur : elles n'ont besoin que
+    // de la position de la ville, jamais de son inventaire.
     if (config.kind === 'free') {
+      if (!freeCity) return;
       setProgress('Tracé des boucles…');
-      const { routes: loops, failures } = await planFreeRoutes(scan, config, (done, total) =>
+
+      const { routes: loops, failures } = await planFreeRoutes(freeCity, config, (done, total) =>
         setProgress(`Tracé des boucles (${done}/${total})…`)
       );
 
@@ -202,7 +214,7 @@ const App: React.FC = () => {
 
       const loopPack: SavedPack = {
         id: `pack-${Date.now()}`,
-        cityName: scan.city.name,
+        cityName: freeCity.name,
         createdAt: new Date().toISOString(),
         routes: loops,
         config,
@@ -219,6 +231,13 @@ const App: React.FC = () => {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
+
+    if (!scan) return;
+    setProgress('Composition des parcours…');
+
+    // Le planificateur est synchrone et peut occuper le thread une seconde :
+    // on laisse le navigateur peindre l'écran de chargement d'abord.
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     let planned = planRoutes(pool, scan.city.name, config);
 
@@ -290,7 +309,7 @@ const App: React.FC = () => {
     setPacks((prev) => [pack, ...prev].slice(0, 20));
     setView('selection');
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [scan, pool, config, aiAvailable]);
+  }, [scan, freeCity, pool, config, aiAvailable]);
 
   /**
    * Préconisation IA depuis l'écran de réglages. L'erreur est renvoyée au
@@ -330,7 +349,7 @@ const App: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const currentCity = scan?.city.name ?? routes[0]?.summary.city ?? '';
+  const currentCity = (config.kind === 'free' ? freeCity?.name : scan?.city.name) ?? routes[0]?.summary.city ?? '';
 
   const resetToCity = () => {
     setView('kind');
@@ -417,6 +436,7 @@ const App: React.FC = () => {
             onChoose={(kind) => {
               setConfig({ ...DEFAULT_ROUTE_CONFIG, kind });
               setScan(null);
+              setFreeCity(null);
               setRoutes([]);
               setActivePack(null);
               setView('city');
@@ -545,9 +565,9 @@ const App: React.FC = () => {
           />
         )}
 
-        {view === 'config' && scan && config.kind === 'free' && (
+        {view === 'config' && freeCity && config.kind === 'free' && (
           <FreeConfigPanel
-            scan={scan}
+            city={freeCity}
             config={config}
             onChange={(updates) => setConfig((prev) => ({ ...prev, ...updates }))}
             onBack={() => setView('city')}
@@ -589,7 +609,7 @@ const App: React.FC = () => {
             routes={routes}
             city={currentCity}
             onSelect={openRoute}
-            onBack={() => setView(scan ? 'config' : 'city')}
+            onBack={() => setView(scan || freeCity ? 'config' : 'city')}
             onExportAll={() =>
               downloadPackJson(
                 activePack ?? {

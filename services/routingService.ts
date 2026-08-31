@@ -28,6 +28,13 @@ export interface RoutedLeg {
 export interface RoutedPath {
   legs: RoutedLeg[];
   totalDistanceM: number;
+  /**
+   * Nom de la voie sur laquelle chaque point demandé s'est accroché, dans
+   * l'ordre envoyé. C'est ce qui permet de guider un parcours libre sans
+   * aucun point d'intérêt : « prenez l'avenue de la Libération ».
+   * Chaîne vide pour une voie sans nom.
+   */
+  waypointNames: string[];
 }
 
 /** GeoJSON renvoie `[lng, lat]`, l'application travaille en `[lat, lng]`. */
@@ -95,7 +102,11 @@ export const fetchRoutedPath = async (
     // Un segment sans géométrie rendrait le mode live inutilisable.
     if (legs.length === 0 || legs.some((leg) => leg.path.length < 2)) return null;
 
-    return { legs, totalDistanceM: Math.round(route.distance ?? 0) };
+    return {
+      legs,
+      totalDistanceM: Math.round(route.distance ?? 0),
+      waypointNames: (json.waypoints || []).map((w: any) => String(w?.name ?? '').trim()),
+    };
   } catch {
     // Réseau coupé, serveur saturé, délai dépassé : repli sur lignes droites.
     return null;

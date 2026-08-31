@@ -14,31 +14,36 @@ touristiques, on retient ceux qu'on veut, le générateur les enchaîne en
 parcours de visite avec arrêts, temps de visite et anecdotes. C'est le mode
 décrit dans le reste de ce document.
 
-**Parcours libre — la distance commande.** On donne une longueur et un point
-de départ, le générateur trace une boucle de cette longueur par les rues et
-les chemins. Aucun arrêt imposé : la durée affichée est du pur effort. Mode
-balade, footing, sortie vélo.
+**Parcours libre — la distance commande, et rien d'autre.** Vous donnez une
+longueur et un point de départ, le générateur trace une boucle aléatoire de
+cette longueur par les rues et les chemins. **Aucun point d'intérêt n'est
+utilisé** : c'est précisément ce qui rend ce mode possible dans une ville qui
+n'a rien à visiter. Mode balade, footing, sortie vélo — un entre-deux entre
+l'exploration libre, non guidée, et le parcours touristique, entièrement guidé.
 
 ### Comment la boucle est tracée
 
-Quatre jalons sont posés sur un cercle autour du départ, et OSRM relie le tout.
-Si le circuit obtenu ne fait pas la bonne longueur, le rayon est corrigé et on
-recommence — jusqu'à tomber à moins de 12 % de la cible.
+Le mode libre **n'interroge jamais l'inventaire des lieux**. Il ne fait qu'une
+requête de géocodage pour situer la ville, puis travaille sur la seule
+géométrie :
 
-Une seconde passe attire ensuite chaque jalon vers un lieu agréable **dans sa
-direction** : on cherche par secteur (« qu'y a-t-il vers le nord-est ? ») et on
-retient le lieu dont la distance au départ colle le mieux au rayon. Ces lieux
-deviennent des **repères croisés en chemin**, avec zéro temps de visite. Si ce
-détour éloigne trop de la distance visée, le rayon est resserré et retenté ;
-en dernier recours la longueur l'emporte sur le décor.
+1. Une **forme** est tirée au hasard : 3 à 6 jalons, rayons inégaux (75 à
+   125 % du rayon nominal) et angles décalés. Un cercle parfait donnerait
+   toujours le même circuit ennuyeux.
+2. Les jalons sont posés autour du départ, et le routeur les relie par les
+   rues réelles.
+3. Si le circuit obtenu ne fait pas la bonne longueur, **seul le rayon est
+   corrigé** — la forme ne bouge pas, ce qui fait converger en deux ou trois
+   essais, à moins de 12 % de la cible.
 
-Le réglage **Ambiance** décide vers quoi attirer la boucle : verdure et eau
-(parcs, jardins, points de vue), vieilles pierres (patrimoine, places), ou
-indifférent.
+Le guidage vient des **noms de rues** que le routeur renvoie pour chaque jalon :
+« rue des Écoles », « avenue de la Libération ». Le promeneur sait où passer
+sans qu'aucun lieu remarquable n'existe. Une voie sans nom devient « Point de
+passage 3 ».
 
-Quand plusieurs boucles sont demandées, elles sont réparties **à l'intérieur
-d'un secteur** et non sur le tour complet : les jalons étant espacés de 90°,
-une rotation de 90° ou 180° redonnerait le même circuit.
+Les boucles d'un même lot sont réparties dans des secteurs distincts, avec une
+part de hasard : elles partent dans des directions différentes, et **relancer
+la génération avec les mêmes réglages donne d'autres circuits**.
 
 Le départ est le centre-ville par défaut, et peut être votre position ou une
 adresse.

@@ -3,7 +3,7 @@ import { pathLengthM, haversineM, destinationPoint, bearingDeg, tracePathLengthM
 import { safetyExclusion } from '../services/osmService';
 import { pickModel, describeApiError } from '../services/geminiService';
 import { applyRoutedPath, straightPath } from '../services/routingService';
-import { anchorsFor } from '../services/loopPlanner';
+import { makeRng, randomLoopShape, shapeWaypoints, spreadBearing } from '../services/loopPlanner';
 import { DEFAULT_ROUTE_CONFIG, POI, POI_THEMES, PoiTheme, RouteConfig } from '../types';
 
 let failures = 0;
@@ -262,7 +262,7 @@ console.log('\n== Tracé par les rues ==');
     };
   });
   const totalDistanceM = legs.reduce((sum, l) => sum + l.distanceM, 0);
-  const routed = applyRoutedPath(route, { legs, totalDistanceM }, config);
+  const routed = applyRoutedPath(route, { legs, totalDistanceM, waypointNames: [] }, config);
 
   check('après routage : géométrie marquée comme réelle', routed.geometrySource === 'osrm');
   check('distances réelles reprises des segments',
@@ -346,36 +346,69 @@ console.log('\n== Longueur d\'un tracé ==');
     Math.abs(straightLeg - 1300) < 3, `${Math.round(straightLeg)} m`);
 }
 
-console.log('\n== Sélection des repères par ambiance ==');
+console.log('\n== Boucles libres : formes aléatoires ==');
 {
-  const scan = {
-    city: { name: 'X', displayName: 'X', lat: 45.9, lng: 6.13, bbox: [0, 0, 0, 0] as [number, number, number, number] },
-    pois: [
-      { ...makeCity(1)[0], id: 'p1', theme: 'Nature & Jardins' as PoiTheme, notoriety: 60 },
-      { ...makeCity(1)[0], id: 'p2', theme: 'Patrimoine & Histoire' as PoiTheme, notoriety: 70 },
-      { ...makeCity(1)[0], id: 'p3', theme: 'Nature & Jardins' as PoiTheme, notoriety: 10 },
-      { ...makeCity(1)[0], id: 'p4', theme: 'Panoramas & Points de vue' as PoiTheme, notoriety: 50 },
-    ],
-    cycleRoutes: [],
-    scannedAt: new Date().toISOString(),
-    notes: [],
-    excludedCount: 0,
-  };
+  const start = { lat: 45.9, lng: 6.13 };
 
-  const nature = anchorsFor(scan, 'nature');
-  check('ambiance nature : nature et panoramas uniquement',
-    nature.every(p => p.theme === 'Nature & Jardins' || p.theme === 'Panoramas & Points de vue'),
-    nature.map(p => p.id).join(','));
-  check('ambiance nature : les lieux mineurs écartés',
-    !nature.some(p => p.id === 'p3'), nature.map(p => p.id).join(','));
+  // Même graine, même boucle : c'est ce qui rend l'aléatoire testable.
+  const a = randomLoopShape(makeRng(42), 0);
+  const b = randomLoopShape(makeRng(42), 0);
+  check('graine identique => forme identique',
+    JSON.stringify(a) === JSON.stringify(b));
 
-  const heritage = anchorsFor(scan, 'heritage');
-  check('ambiance patrimoine : patrimoine retenu',
-    heritage.length === 1 && heritage[0].id === 'p2', heritage.map(p => p.id).join(','));
+  const c = randomLoopShape(makeRng(43), 0);
+  check('graine différente => forme différente',
+    JSON.stringify(a) !== JSON.stringify(c));
 
-  const any = anchorsFor(scan, 'any');
-  check('ambiance indifférente : tous les lieux notables',
-    any.length === 3, `${any.length}`);
+  // Cent formes tirées : bornes et cohérence interne.
+  const rng = makeRng(7);
+  const shapes = Array.from({ length: 100 }, (_, i) => randomLoopShape(rng, i * 3));
+  check('3 à 6 jalons par boucle',
+    shapes.every(s => s.waypointCount >= 3 && s.waypointCount <= 6),
+    `min ${Math.min(...shapes.map(s => s.waypointCount))}, max ${Math.max(...shapes.map(s => s.waypointCount))}`);
+  check('un facteur de rayon et un décalage par jalon',
+    shapes.every(s => s.radiusFactors.length === s.waypointCount &&
+                      s.bearingOffsets.length === s.waypointCount));
+  check('rayons déformés mais bornés (75-125 %)',
+    shapes.every(s => s.radiusFactors.every(f => f >= 0.75 && f <= 1.25)));
+  check('décalages angulaires sous un quart de secteur',
+    shapes.every(s => s.bearingOffsets.every(o => Math.abs(o) <= (360 / s.waypointCount) * 0.25 + 1e-9)));
+  check('les formes varient vraiment',
+    new Set(shapes.map(s => JSON.stringify(s))).size === 100);
+
+  // Les jalons doivent former un vrai tour autour du départ.
+  const shape = randomLoopShape(makeRng(11), 0);
+  const wps = shapeWaypoints(start, shape, 1000);
+  check('un jalon posé par point de la forme', wps.length === shape.waypointCount);
+  const distances = wps.map(w => haversineM(start, w));
+  check('tous les jalons dans la fourchette de rayon',
+    distances.every(d => d >= 740 && d <= 1260),
+    distances.map(d => Math.round(d)).join(', '));
+
+  // Les caps doivent couvrir le tour, sans que deux jalons se croisent.
+  const bearings = wps.map(w => bearingDeg(start, w)).sort((x, y) => x - y);
+  const gaps = bearings.map((b, i) => i === 0 ? b + 360 - bearings[bearings.length - 1] : b - bearings[i - 1]);
+  check('aucun jalon ne double son voisin', gaps.every(g => g > 0),
+    gaps.map(g => Math.round(g)).join(', '));
+
+  // Le rayon est le seul levier : doubler le rayon double les distances.
+  const doubled = shapeWaypoints(start, shape, 2000);
+  check('la forme est indépendante de la taille',
+    doubled.every((w, i) => Math.abs(haversineM(start, w) / distances[i] - 2) < 0.01));
+}
+
+console.log('\n== Boucles libres : répartition des directions ==');
+{
+  const rng = makeRng(3);
+  const total = 4;
+  const bearings = Array.from({ length: total }, (_, i) => spreadBearing(i, total, rng));
+  check('chaque boucle démarre dans son propre secteur',
+    bearings.every((b, i) => b >= i * (360 / total) && b < (i + 1) * (360 / total)),
+    bearings.map(b => Math.round(b)).join('°, ') + '°');
+
+  const again = Array.from({ length: total }, (_, i) => spreadBearing(i, total, makeRng(99)));
+  check('relancer donne d\'autres directions',
+    JSON.stringify(bearings) !== JSON.stringify(again));
 }
 
 console.log(failures === 0 ? '\nTous les tests passent.\n' : `\n${failures} test(s) en échec.\n`);
