@@ -140,6 +140,12 @@ export interface RouteConfig {
   sizingMode: SizingMode;
   /** Temps disponible par parcours, en minutes (mode `duration`). */
   targetMinutes: number;
+  /**
+   * Nombre d'arrêts imposé malgré le cadrage par le temps.
+   * `null` = déduit du temps disponible. Fixé, c'est la distance de marche qui
+   * s'ajuste pour tenir dans le budget.
+   */
+  stopsOverride: number | null;
   /** Bornes du nombre d'arrêts par parcours (mode `stops`). */
   stopsMin: number;
   stopsTarget: number;
@@ -172,6 +178,7 @@ export const DEFAULT_ROUTE_CONFIG: RouteConfig = {
   start: null,
   sizingMode: 'stops',
   targetMinutes: 90,
+  stopsOverride: null,
   stopsMin: 4,
   stopsTarget: 6,
   stopsMax: 9,

@@ -147,19 +147,31 @@ export const effectiveSizing = (pois: POI[], config: RouteConfig): Sizing => {
   }
 
   const model = estimateTimeModel(pois, config);
-  const target = stopsForBudget(config.targetMinutes, model);
 
-  // Le budget de marche vient du modèle de trajets, pas du temps « restant » :
-  // si les visites mangent tout le budget, un reste négatif donnerait une
-  // distance absurde qui étranglerait la planification.
-  const walkMinutes = (target - 1) * model.avgLegMinutes * WALK_BUDGET_MARGIN;
+  // Les arrêts sont déduits du temps, sauf si l'utilisateur les impose : dans
+  // ce cas c'est la distance de marche qui s'ajuste pour tenir le budget.
+  const target =
+    config.stopsOverride !== null
+      ? Math.max(2, config.stopsOverride)
+      : stopsForBudget(config.targetMinutes, model);
+
+  // Marcher entre n arrêts prend un temps incompressible : c'est le plancher.
+  // Au-delà, on offre tout le temps que les visites laissent libre. Un budget
+  // trop serré ne réduit donc pas la marche sous le réalisable — il fait
+  // dépasser la durée, ce que l'écran signale.
+  const modelWalkMinutes = (target - 1) * model.avgLegMinutes * WALK_BUDGET_MARGIN;
+  const sparedMinutes = config.targetMinutes - target * model.avgVisitMinutes;
+  const walkMinutes = Math.max(modelWalkMinutes, sparedMinutes);
+
+  // Un nombre imposé est une consigne, pas une cible : on resserre les bornes.
+  // Déduit du temps, on laisse au contraire de la marge, car tous les quartiers
+  // n'ont pas la même densité.
+  const spread = config.stopsOverride !== null ? 0 : 1;
 
   return {
-    // Une marge de part et d'autre : tous les quartiers n'ont pas la même
-    // densité, un parcours un peu plus court reste dans l'esprit du budget.
-    stopsMin: Math.max(2, Math.round(target * 0.75)),
+    stopsMin: Math.max(2, spread ? Math.round(target * 0.75) : target),
     stopsTarget: target,
-    stopsMax: Math.max(3, Math.round(target * 1.3)),
+    stopsMax: Math.max(3, spread ? Math.round(target * 1.3) : target),
     maxDistanceKm: Math.max(0.5, Math.round((walkMinutes / 60) * config.paceKmh * 10) / 10),
   };
 };

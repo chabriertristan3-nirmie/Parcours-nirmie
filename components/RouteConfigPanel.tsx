@@ -497,12 +497,78 @@ export const RouteConfigPanel: React.FC<Props> = ({
                   ))}
                 </div>
 
+                {/* Nombre d'arrêts : déduit du temps, ou imposé ------------- */}
+                <div className="pt-2 space-y-3 border-t border-gray-100">
+                  <div>
+                    <p className="flex items-center gap-2 text-xs font-black text-gray-600 uppercase tracking-wide">
+                      <ListOrdered className="w-3.5 h-3.5 text-nirmie-500" />
+                      Nombre d'arrêts
+                    </p>
+                    <p className="text-[10px] text-gray-400 mt-1">
+                      Laissez le temps le décider, ou imposez-le : la distance de{' '}
+                      {config.travelMode === 'bike' ? 'vélo' : 'marche'} s'ajuste alors pour tenir
+                      dans le budget.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(
+                      [
+                        [true, 'Déduit du temps'],
+                        [false, 'Imposé'],
+                      ] as const
+                    ).map(([auto, label]) => (
+                      <button
+                        key={label}
+                        onClick={() =>
+                          onChange({
+                            stopsOverride: auto ? null : capacity.stopsTarget,
+                            routeCount: null,
+                          })
+                        }
+                        className={`py-2.5 rounded-xl border-2 text-[11px] font-bold transition-all ${
+                          (config.stopsOverride === null) === auto
+                            ? 'border-nirmie-500 bg-nirmie-50 text-nirmie-700'
+                            : 'border-gray-100 text-gray-400 hover:border-gray-200'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {config.stopsOverride !== null && (
+                    <div className="space-y-1.5 animate-fade-in">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-gray-500">Arrêts par parcours</span>
+                        <span className="text-sm font-black text-nirmie-600">
+                          {config.stopsOverride}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min="2"
+                        max="20"
+                        value={config.stopsOverride}
+                        onChange={(e) =>
+                          onChange({ stopsOverride: Number(e.target.value), routeCount: null })
+                        }
+                        className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-nirmie-500"
+                      />
+                      <div className="flex justify-between text-[10px] text-gray-400 font-medium">
+                        <span>2</span>
+                        <span>20</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="bg-nirmie-50 border border-nirmie-100 rounded-2xl p-3 space-y-1">
                   <p className="text-[10px] font-black text-nirmie-700 uppercase tracking-widest">
-                    Déduit de ce temps
+                    {config.stopsOverride === null ? 'Déduit de ce temps' : 'Ce que cela donne'}
                   </p>
                   <p className="text-xs text-nirmie-900">
-                    <strong>{capacity.stopsTarget} arrêts</strong> par parcours, et jusqu'à{' '}
+                    <strong>{capacity.stopsTarget} arrêts</strong>
+                    {config.stopsOverride !== null ? ' (imposés)' : ''} par parcours, et jusqu'à{' '}
                     <strong>
                       {capacity.maxDistanceKm ? `${capacity.maxDistanceKm} km` : 'distance libre'}
                     </strong>{' '}
@@ -524,8 +590,10 @@ export const RouteConfigPanel: React.FC<Props> = ({
                         attendus.
                       </strong>{' '}
                       Les lieux retenus demandent trop de temps de visite pour rentrer dans{' '}
-                      {formatDuration(config.targetMinutes)}. Allongez le temps, ou écartez les
-                      lieux les plus longs à visiter dans l'inventaire (musées, châteaux).
+                      {formatDuration(config.targetMinutes)}.{' '}
+                      {config.stopsOverride !== null
+                        ? `Baissez le nombre d'arrêts imposé, allongez le temps, ou écartez les lieux les plus longs à visiter dans l'inventaire (musées, châteaux).`
+                        : `Allongez le temps, ou écartez les lieux les plus longs à visiter dans l'inventaire (musées, châteaux).`}
                     </p>
                   </div>
                 )}

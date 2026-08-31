@@ -503,5 +503,90 @@ console.log('\n== Cadrage par le temps ==');
     `${planned.length} parcours de ${planned.map(r => r.steps.length).join(', ')} arrêts`);
 }
 
+console.log('\n== Par le temps, avec un nombre d\'arrêts imposé ==');
+{
+  const pois = makeCity(60, 17);
+  const base = cfg({ sizingMode: 'duration', paceKmh: 4.2 });
+  const model = estimateTimeModel(pois, base);
+
+  // La consigne prime sur la déduction : les trois bornes valent le nombre
+  // demandé, sans marge — sinon ce ne serait pas « imposé ».
+  [3, 6, 11].forEach(n => {
+    const sz = effectiveSizing(pois, cfg({
+      sizingMode: 'duration', targetMinutes: 120, stopsOverride: n,
+    }));
+    check(`${n} arrêts imposés : les bornes s'y tiennent exactement`,
+      sz.stopsMin === n && sz.stopsTarget === n && sz.stopsMax === n,
+      `${sz.stopsMin} / ${sz.stopsTarget} / ${sz.stopsMax}`);
+  });
+
+  // Ce qui s'ajuste, c'est la distance : plus d'arrêts imposés, plus de trajet.
+  const few = effectiveSizing(pois, cfg({
+    sizingMode: 'duration', targetMinutes: 120, stopsOverride: 3,
+  }));
+  const many = effectiveSizing(pois, cfg({
+    sizingMode: 'duration', targetMinutes: 120, stopsOverride: 10,
+  }));
+  check('plus d\'arrêts imposés => plus de distance allouée',
+    (many.maxDistanceKm ?? 0) > (few.maxDistanceKm ?? 0),
+    `${few.maxDistanceKm} km pour 3 arrêts, ${many.maxDistanceKm} km pour 10`);
+
+  // Le temps reste maître de la distance quand les arrêts ne bougent pas.
+  const tight = effectiveSizing(pois, cfg({
+    sizingMode: 'duration', targetMinutes: 90, stopsOverride: 6,
+  }));
+  const roomy = effectiveSizing(pois, cfg({
+    sizingMode: 'duration', targetMinutes: 300, stopsOverride: 6,
+  }));
+  check('à arrêts égaux, plus de temps => plus de distance',
+    (roomy.maxDistanceKm ?? 0) > (tight.maxDistanceKm ?? 0),
+    `${tight.maxDistanceKm} km en 1 h 30, ${roomy.maxDistanceKm} km en 5 h`);
+
+  // Un budget serré ne doit jamais produire une distance nulle ou négative :
+  // marcher entre n arrêts prend un temps incompressible, c'est le plancher.
+  [20, 30, 45].forEach(budget => {
+    const sz = effectiveSizing(pois, cfg({
+      sizingMode: 'duration', targetMinutes: budget, stopsOverride: 12,
+    }));
+    check(`12 arrêts en ${budget} min : distance encore exploitable`,
+      (sz.maxDistanceKm ?? 0) >= 0.5, `${sz.maxDistanceKm} km`);
+  });
+
+  // Une consigne intenable doit rester visible : l'écran s'appuie sur
+  // `estimatedMinutes` pour avertir, il faut donc qu'il dépasse franchement.
+  const overloaded = computeCapacity(pois, cfg({
+    sizingMode: 'duration', targetMinutes: 60, stopsOverride: 12,
+  }));
+  check('consigne intenable : le dépassement est mesurable',
+    overloaded.estimatedMinutes > 60 * 1.15,
+    `${overloaded.estimatedMinutes} min pour 60 min demandées`);
+  check('les arrêts annoncés sont bien ceux imposés',
+    overloaded.stopsTarget === 12, `${overloaded.stopsTarget} arrêts`);
+
+  // Repasser en automatique doit rendre la main au temps.
+  const auto = effectiveSizing(pois, cfg({
+    sizingMode: 'duration', targetMinutes: 120, stopsOverride: null,
+  }));
+  check('sans consigne, les arrêts redeviennent déduits du temps',
+    auto.stopsTarget === stopsForBudget(120, model) && auto.stopsMin < auto.stopsMax,
+    `${auto.stopsMin} / ${auto.stopsTarget} / ${auto.stopsMax}`);
+
+  // Et la consigne ne doit rien changer au mode par arrêts.
+  const byStops = effectiveSizing(pois, cfg({
+    sizingMode: 'stops', stopsMin: 5, stopsTarget: 7, stopsMax: 9,
+    maxDistanceKm: 3, stopsOverride: 12,
+  }));
+  check('mode par arrêts : la consigne du mode temps est ignorée',
+    byStops.stopsTarget === 7 && byStops.maxDistanceKm === 3);
+
+  // Enfin, la génération réelle doit produire des parcours de cette taille.
+  const planned = planRoutes(pois, 'Testville', cfg({
+    sizingMode: 'duration', targetMinutes: 150, stopsOverride: 5,
+  }));
+  check('parcours générés avec exactement le nombre d\'arrêts imposé',
+    planned.length > 0 && planned.every(r => r.steps.length === 5),
+    `${planned.length} parcours de ${planned.map(r => r.steps.length).join(', ')} arrêts`);
+}
+
 console.log(failures === 0 ? '\nTous les tests passent.\n' : `\n${failures} test(s) en échec.\n`);
 process.exit(failures === 0 ? 0 : 1);
