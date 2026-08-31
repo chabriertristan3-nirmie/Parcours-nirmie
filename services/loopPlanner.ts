@@ -259,6 +259,22 @@ const buildFreeSteps = (
   });
 };
 
+/**
+ * Thème affiché pour une boucle : celui des lieux réellement traversés.
+ * Sans repère, l'ambiance demandée fait foi ; à défaut, la vie locale —
+ * une boucle urbaine sans lieu marquant n'est pas du « patrimoine ».
+ */
+const loopTheme = (anchors: POI[], ambience: Ambience): PoiTheme => {
+  if (anchors.length > 0) {
+    const counts = new Map<PoiTheme, number>();
+    anchors.forEach((a) => counts.set(a.theme, (counts.get(a.theme) || 0) + 1));
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  }
+  if (ambience === 'nature') return 'Nature & Jardins';
+  if (ambience === 'heritage') return 'Patrimoine & Histoire';
+  return 'Places & Vie locale';
+};
+
 const loopTitle = (city: string, anchors: POI[], distanceKm: number, index: number): string => {
   const landmark = [...anchors].sort((a, b) => b.notoriety - a.notoriety)[0];
   if (landmark) return `Boucle de ${distanceKm} km par ${landmark.name}`;
@@ -272,18 +288,25 @@ const loopTitle = (city: string, anchors: POI[], distanceKm: number, index: numb
  * cinq fois le même circuit. Les repères déjà utilisés sont réservés, ce qui
  * écarte les boucles les unes des autres.
  */
-export const planFreeRoutes = async (
-  scan: CityScan,
-  config: RouteConfig,
-  onProgress?: (done: number, total: number) => void
-): Promise<{ routes: GeneratedRoute[]; failures: number }> => {
-  const start: StartPoint = config.start ?? {
+/** Point de départ effectif d'une boucle. Partagé avec l'écran de réglages. */
+export const startPointFor = (scan: CityScan, config: RouteConfig): StartPoint =>
+  config.start ?? {
     lat: scan.city.lat,
     lng: scan.city.lng,
     label: `Centre de ${scan.city.name}`,
   };
 
-  const total = Math.max(1, config.routeCount ?? 3);
+/** Nombre de boucles effectif. Partagé avec l'écran de réglages. */
+export const loopCountFor = (config: RouteConfig): number =>
+  Math.max(1, config.routeCount ?? 3);
+
+export const planFreeRoutes = async (
+  scan: CityScan,
+  config: RouteConfig,
+  onProgress?: (done: number, total: number) => void
+): Promise<{ routes: GeneratedRoute[]; failures: number }> => {
+  const start = startPointFor(scan, config);
+  const total = loopCountFor(config);
   const anchors = anchorsFor(scan, config.ambience);
   const usedAnchors = new Set<string>();
   const routes: GeneratedRoute[] = [];
@@ -313,7 +336,7 @@ export const planFreeRoutes = async (
       summary: {
         title: loopTitle(scan.city.name, attempt.anchors, distanceKm, i),
         city: scan.city.name,
-        theme: config.ambience === 'nature' ? 'Nature & Jardins' : 'Patrimoine & Histoire',
+        theme: loopTheme(attempt.anchors, config.ambience),
         travelMode: config.travelMode,
         kind: 'free',
         totalDistanceKm: distanceKm,

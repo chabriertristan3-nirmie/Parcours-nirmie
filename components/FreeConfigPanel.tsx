@@ -19,11 +19,10 @@ import {
   CityScan,
   MODE_PRESETS,
   RouteConfig,
-  StartPoint,
   TravelMode,
 } from '../types';
 import { formatDuration } from '../services/geo';
-import { anchorsFor } from '../services/loopPlanner';
+import { anchorsFor, loopCountFor, startPointFor } from '../services/loopPlanner';
 import { geocodeCity } from '../services/osmService';
 import { MapView } from './MapView';
 
@@ -52,14 +51,9 @@ export const FreeConfigPanel: React.FC<Props> = ({
     [scan, config.ambience]
   );
 
-  const start: StartPoint = config.start ?? {
-    lat: scan.city.lat,
-    lng: scan.city.lng,
-    label: `Centre de ${scan.city.name}`,
-  };
-
+  const start = startPointFor(scan, config);
   const effortMinutes = (config.targetDistanceKm / config.paceKmh) * 60;
-  const loopCount = config.routeCount ?? 3;
+  const loopCount = loopCountFor(config);
 
   const switchMode = (mode: TravelMode) => {
     if (mode === config.travelMode) return;

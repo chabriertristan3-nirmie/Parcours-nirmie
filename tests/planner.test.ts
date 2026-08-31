@@ -1,5 +1,5 @@
 import { computeCapacity, planRoutes, applyFilters } from '../services/routePlanner';
-import { pathLengthM, haversineM, destinationPoint, bearingDeg } from '../services/geo';
+import { pathLengthM, haversineM, destinationPoint, bearingDeg, tracePathLengthM } from '../services/geo';
 import { safetyExclusion } from '../services/osmService';
 import { pickModel, describeApiError } from '../services/geminiService';
 import { applyRoutedPath, straightPath } from '../services/routingService';
@@ -330,6 +330,20 @@ console.log('\n== Géométrie du cercle (base des boucles) ==');
   const ring = [0, 90, 180, 270].map((a) => destinationPoint(center, a, 800));
   const equidistant = ring.every((p) => Math.abs(haversineM(center, p) - 800) < 1);
   check('les quatre jalons sont équidistants du départ', equidistant);
+}
+
+console.log('\n== Longueur d\'un tracé ==');
+{
+  const a = { lat: 45.9, lng: 6.13 };
+  const b = destinationPoint(a, 90, 1000);
+  // Régression : le facteur de voirie (x1,3) ne s'applique qu'aux distances à
+  // vol d'oiseau, jamais à un tracé qui suit déjà les rues.
+  const traced = tracePathLengthM([[a.lat, a.lng], [b.lat, b.lng]]);
+  check('tracé de 1 km mesuré 1 km (pas de facteur de voirie)',
+    Math.abs(traced - 1000) < 2, `${Math.round(traced)} m`);
+  const straightLeg = pathLengthM([a, b], false);
+  check('distance arrêt-à-arrêt toujours corrigée x1,3',
+    Math.abs(straightLeg - 1300) < 3, `${Math.round(straightLeg)} m`);
 }
 
 console.log('\n== Sélection des repères par ambiance ==');

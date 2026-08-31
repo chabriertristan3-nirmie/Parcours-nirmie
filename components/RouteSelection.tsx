@@ -33,8 +33,15 @@ export const RouteSelection: React.FC<Props> = ({
   onExportAll,
   onSupabaseExport,
 }) => {
-  const totalStops = routes.reduce((sum, r) => sum + r.steps.length, 0);
-  const uniqueStops = new Set(routes.flatMap((r) => r.steps.map((s) => s.id))).size;
+  // Sur une boucle libre, la première étape est le point de départ, pas un
+  // repère : on l'écarte des comptes pour que le total colle aux cartes.
+  const landmarkSteps = (route: GeneratedRoute) =>
+    route.summary.kind === 'free' ? route.steps.slice(1) : route.steps;
+
+  const totalStops = routes.reduce((sum, r) => sum + landmarkSteps(r).length, 0);
+  const uniqueStops = new Set(
+    routes.flatMap((r) => landmarkSteps(r).map((s) => s.id))
+  ).size;
   const totalKm = routes.reduce((sum, r) => sum + r.summary.totalDistanceKm, 0);
   const isFree = routes[0]?.summary.kind === 'free';
 

@@ -83,3 +83,16 @@ create policy generator_routes_write on public.generator_routes
 drop policy if exists generator_steps_write on public.generator_steps;
 create policy generator_steps_write on public.generator_steps
   for all using (true) with check (true);
+
+-- --------------------------------------------------------------------------
+-- Mise à niveau d'une base ayant exécuté une version antérieure de ce fichier.
+-- `create table if not exists` n'ajoute pas les colonnes apparues depuis :
+-- ces alter les rattrapent, et sont sans effet sur une base neuve.
+-- --------------------------------------------------------------------------
+alter table public.generator_routes
+  add column if not exists kind text not null default 'tour'
+    check (kind in ('tour', 'free'));
+alter table public.generator_routes add column if not exists path jsonb;
+alter table public.generator_routes add column if not exists geometry_source text;
+alter table public.generator_steps add column if not exists duration_from_prev_s integer;
+alter table public.generator_steps add column if not exists path_from_prev jsonb;

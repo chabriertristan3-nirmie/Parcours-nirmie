@@ -323,7 +323,9 @@ const App: React.FC = () => {
   const openPack = (pack: SavedPack) => {
     setRoutes(pack.routes);
     setActivePack(pack);
-    setConfig(pack.config);
+    // Les packs archivés peuvent dater d'avant certains réglages (kind,
+    // travelMode…) : les défauts comblent ce qui leur manque.
+    setConfig({ ...DEFAULT_ROUTE_CONFIG, ...pack.config });
     setView('selection');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };

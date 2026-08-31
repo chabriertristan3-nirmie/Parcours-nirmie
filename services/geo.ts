@@ -49,9 +49,23 @@ export const pathLengthM = (
   return total;
 };
 
-/** Longueur d'un tracé donné en paires `[lat, lng]`, en mètres. */
-export const tracePathLengthM = (points: [number, number][]): number =>
-  pathLengthM(points.map(([lat, lng]) => ({ lat, lng })), false);
+/**
+ * Longueur d'un tracé donné en paires `[lat, lng]`, en mètres.
+ *
+ * Un tracé suit déjà les rues : sa longueur est la somme brute de ses
+ * segments, SANS le facteur de voirie — celui-ci ne corrige que les distances
+ * à vol d'oiseau entre deux arrêts.
+ */
+export const tracePathLengthM = (points: [number, number][]): number => {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += haversineM(
+      { lat: points[i - 1][0], lng: points[i - 1][1] },
+      { lat: points[i][0], lng: points[i][1] }
+    );
+  }
+  return total;
+};
 
 export const centroid = (points: { lat: number; lng: number }[]) => {
   if (points.length === 0) return { lat: 0, lng: 0 };
