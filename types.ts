@@ -115,6 +115,16 @@ export interface PoiFilters {
 
 export type ThemeMode = 'mixed' | 'thematic';
 
+/**
+ * Ce qui cadre la taille d'un parcours touristique.
+ *
+ * `stops`    : vous fixez les bornes d'arrêts, la durée en découle.
+ * `duration` : vous fixez le temps dont vous disposez, et tout le reste en
+ *              découle — nombre d'arrêts, distance de marche, et donc le
+ *              nombre de parcours que la ville peut porter.
+ */
+export type SizingMode = 'stops' | 'duration';
+
 export interface RouteConfig {
   /** Famille de parcours : visite de lieux, ou boucle à la distance voulue. */
   kind: RouteKind;
@@ -126,7 +136,11 @@ export interface RouteConfig {
   targetDistanceKm: number;
   /** Point de départ. `null` = centre-ville. */
   start: StartPoint | null;
-  /** Bornes du nombre d'arrêts par parcours. */
+  /** Ce qui cadre la taille des parcours : les arrêts, ou le temps. */
+  sizingMode: SizingMode;
+  /** Temps disponible par parcours, en minutes (mode `duration`). */
+  targetMinutes: number;
+  /** Bornes du nombre d'arrêts par parcours (mode `stops`). */
   stopsMin: number;
   stopsTarget: number;
   stopsMax: number;
@@ -156,6 +170,8 @@ export const DEFAULT_ROUTE_CONFIG: RouteConfig = {
   travelMode: 'walk',
   targetDistanceKm: 6,
   start: null,
+  sizingMode: 'stops',
+  targetMinutes: 90,
   stopsMin: 4,
   stopsTarget: 6,
   stopsMax: 9,
@@ -290,6 +306,14 @@ export interface Capacity {
   leftovers: number;
   /** Répartition du pool par thème. */
   byTheme: Record<string, number>;
+  /** Arrêts effectivement visés — déduits du temps en mode `duration`. */
+  stopsTarget: number;
+  /** Durée moyenne estimée d'un parcours, visites comprises, en minutes. */
+  estimatedMinutes: number;
+  /** Part de cette durée passée à marcher ou pédaler. */
+  estimatedEffortMinutes: number;
+  /** Budget de distance effectif, en km. `null` = pas de limite. */
+  maxDistanceKm: number | null;
 }
 
 export interface SavedPack {

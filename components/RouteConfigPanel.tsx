@@ -13,6 +13,7 @@ import {
   Ruler,
   Shuffle,
   Sparkles,
+  Clock,
   Stethoscope,
   Wand2,
   X,
@@ -24,6 +25,7 @@ import {
   MODE_PRESETS,
   POI,
   RouteConfig,
+  SizingMode,
   TravelMode,
 } from '../types';
 import { formatDuration } from '../services/geo';
@@ -121,14 +123,11 @@ export const RouteConfigPanel: React.FC<Props> = ({
   const routeCount = config.routeCount ?? capacity.maxRoutes;
   const impossible = capacity.maxRoutes === 0;
 
-  // Estimation moyenne, à titre indicatif — les vraies valeurs sont calculées
-  // parcours par parcours à la génération. L'effort (marche ou vélo) est la
-  // donnée principale ; les visites s'affichent à part.
-  const avgVisit =
-    pool.reduce((sum, p) => sum + p.visitMinutes, 0) / Math.max(1, pool.length);
-  const estimatedEffortMinutes =
-    (((config.maxDistanceKm ?? preset.defaultDistanceKm) * 0.75) / config.paceKmh) * 60;
-  const estimatedVisitMinutes = config.stopsTarget * avgVisit;
+  // Estimations issues du calcul de capacité : elles tiennent compte de la
+  // densité réelle des lieux retenus, et valent pour les deux cadrages.
+  const estimatedEffortMinutes = capacity.estimatedEffortMinutes;
+  const estimatedVisitMinutes = Math.max(0, capacity.estimatedMinutes - estimatedEffortMinutes);
+  const byDuration = config.sizingMode === 'duration';
 
   const switchMode = (mode: TravelMode) => {
     if (mode === config.travelMode) return;
@@ -188,6 +187,9 @@ export const RouteConfigPanel: React.FC<Props> = ({
   const applyRecommendation = () => {
     if (!recommendation) return;
     onChange({
+      // La préconisation raisonne en arrêts : on bascule sur ce cadrage, sans
+      // quoi les valeurs proposées seraient aussitôt écrasées par le temps.
+      sizingMode: 'stops',
       routeCount: recommendation.routeCount,
       stopsMin: recommendation.stopsMin,
       stopsTarget: recommendation.stopsTarget,
@@ -279,14 +281,14 @@ export const RouteConfigPanel: React.FC<Props> = ({
           </div>
           <div className="space-y-1 text-sm">
             <p className="text-nirmie-50">
-              <strong>{capacity.recommendedRoutes}</strong> parcours à {config.stopsTarget} arrêts
-              (confortable)
+              de <strong>~{formatDuration(capacity.estimatedMinutes)}</strong> chacun,{' '}
+              {capacity.stopsTarget} arrêts en moyenne
             </p>
             <p className="text-nirmie-100/80 text-xs">
-              soit ~{formatDuration(estimatedEffortMinutes)} de{' '}
-              {config.travelMode === 'bike' ? 'vélo' : 'marche'} (+ ~
-              {formatDuration(estimatedVisitMinutes)} de visites) et jusqu'à{' '}
-              {config.maxDistanceKm ? `${config.maxDistanceKm} km` : 'distance libre'} par parcours
+              dont ~{formatDuration(estimatedEffortMinutes)} de{' '}
+              {config.travelMode === 'bike' ? 'vélo' : 'marche'} et ~
+              {formatDuration(estimatedVisitMinutes)} de visites, jusqu'à{' '}
+              {capacity.maxDistanceKm ? `${capacity.maxDistanceKm} km` : 'distance libre'}
             </p>
           </div>
         </div>
@@ -421,57 +423,169 @@ export const RouteConfigPanel: React.FC<Props> = ({
         {/* Colonne gauche : taille des parcours --------------------------- */}
         <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-6 space-y-7">
           <Section
-            icon={<ListOrdered className="w-4 h-4 text-nirmie-500" />}
-            title="Arrêts par parcours"
-            hint="Le minimum décide de la capacité maximale, la cible du confort de visite."
+            icon={<Clock className="w-4 h-4 text-nirmie-500" />}
+            title="Cadrage des parcours"
+            hint="Ce qui décide de la taille — et donc du nombre de parcours."
           >
-            <div className="space-y-5">
+            <div className="grid grid-cols-2 gap-2">
               {(
                 [
-                  [
-                    'stopsMin',
-                    'Minimum',
-                    2,
-                    12,
-                    "En dessous de ce nombre d'arrêts, un parcours n'est pas créé. C'est ce chiffre qui fixe le nombre maximal de parcours : plus il est bas, plus la ville en produit.",
-                  ],
-                  [
-                    'stopsTarget',
-                    'Cible',
-                    2,
-                    15,
-                    "La taille idéale d'un parcours. Le générateur vise ce nombre d'arrêts quand le quartier est assez fourni — c'est ce qui rend les parcours réguliers entre eux.",
-                  ],
-                  [
-                    'stopsMax',
-                    'Maximum',
-                    3,
-                    20,
-                    "Plafond absolu : un parcours ne dépasse jamais ce nombre d'arrêts, même si d'autres lieux restent à proximité.",
-                  ],
+                  ['duration', 'Par le temps', <Clock key="d" className="w-4 h-4" />],
+                  ['stops', 'Par les arrêts', <ListOrdered key="s" className="w-4 h-4" />],
                 ] as const
-              ).map(([key, label, min, max, help]) => (
-                <div key={key} className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-gray-500">{label}</span>
-                    <span className="text-sm font-black text-nirmie-600">{config[key]}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={min}
-                    max={max}
-                    value={config[key]}
-                    onChange={(e) => setStops(key, Number(e.target.value))}
-                    className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-nirmie-500"
-                  />
-                  <p className="text-[10px] text-gray-400 leading-relaxed">{help}</p>
-                </div>
+              ).map(([mode, label, icon]) => (
+                <button
+                  key={mode}
+                  onClick={() => onChange({ sizingMode: mode as SizingMode, routeCount: null })}
+                  className={`p-3 rounded-2xl border-2 transition-all flex flex-col items-center gap-1.5 ${
+                    config.sizingMode === mode
+                      ? 'border-nirmie-500 bg-nirmie-50 text-nirmie-700'
+                      : 'border-gray-100 text-gray-400 hover:border-gray-200'
+                  }`}
+                >
+                  {icon}
+                  <span className="text-[11px] font-bold">{label}</span>
+                </button>
               ))}
             </div>
           </Section>
 
           <div className="h-px bg-gray-100" />
 
+          {byDuration ? (
+            <Section
+              icon={<Clock className="w-4 h-4 text-nirmie-500" />}
+              title="Temps par parcours"
+              hint="Le seul réglage à donner : tout le reste en découle."
+            >
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-gray-500">Temps disponible</span>
+                  <span className="text-2xl font-black text-nirmie-600 leading-none">
+                    {formatDuration(config.targetMinutes)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="20"
+                  max="360"
+                  step="5"
+                  value={config.targetMinutes}
+                  onChange={(e) =>
+                    onChange({ targetMinutes: Number(e.target.value), routeCount: null })
+                  }
+                  className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-nirmie-500"
+                />
+                <div className="flex justify-between text-[10px] text-gray-400 font-medium">
+                  <span>20 min</span>
+                  <span>6 h</span>
+                </div>
+
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {[45, 90, 120, 180].map((minutes) => (
+                    <button
+                      key={minutes}
+                      onClick={() => onChange({ targetMinutes: minutes, routeCount: null })}
+                      className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors ${
+                        config.targetMinutes === minutes
+                          ? 'bg-nirmie-500 text-white'
+                          : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
+                      }`}
+                    >
+                      {formatDuration(minutes)}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="bg-nirmie-50 border border-nirmie-100 rounded-2xl p-3 space-y-1">
+                  <p className="text-[10px] font-black text-nirmie-700 uppercase tracking-widest">
+                    Déduit de ce temps
+                  </p>
+                  <p className="text-xs text-nirmie-900">
+                    <strong>{capacity.stopsTarget} arrêts</strong> par parcours, et jusqu'à{' '}
+                    <strong>
+                      {capacity.maxDistanceKm ? `${capacity.maxDistanceKm} km` : 'distance libre'}
+                    </strong>{' '}
+                    de {config.travelMode === 'bike' ? 'vélo' : 'marche'}.
+                  </p>
+                  <p className="text-[10px] text-nirmie-700/80 leading-relaxed">
+                    Calculé sur la densité réelle des lieux retenus : durée de visite moyenne et
+                    distance typique entre deux lieux voisins.
+                  </p>
+                </div>
+
+                {/* Un budget peut être intenable : deux arrêts sont le minimum,
+                    et deux visites longues dépassent déjà un petit budget. */}
+                {capacity.estimatedMinutes > config.targetMinutes * 1.15 && (
+                  <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3">
+                    <p className="text-xs text-amber-800 leading-relaxed">
+                      <strong>
+                        Budget difficile à tenir : ~{formatDuration(capacity.estimatedMinutes)}{' '}
+                        attendus.
+                      </strong>{' '}
+                      Les lieux retenus demandent trop de temps de visite pour rentrer dans{' '}
+                      {formatDuration(config.targetMinutes)}. Allongez le temps, ou écartez les
+                      lieux les plus longs à visiter dans l'inventaire (musées, châteaux).
+                    </p>
+                  </div>
+                )}
+              </div>
+            </Section>
+          ) : (
+            <Section
+              icon={<ListOrdered className="w-4 h-4 text-nirmie-500" />}
+              title="Arrêts par parcours"
+              hint="Le minimum décide de la capacité maximale, la cible du confort de visite."
+            >
+              <div className="space-y-5">
+                {(
+                  [
+                    [
+                      'stopsMin',
+                      'Minimum',
+                      2,
+                      12,
+                      "En dessous de ce nombre d'arrêts, un parcours n'est pas créé. C'est ce chiffre qui fixe le nombre maximal de parcours : plus il est bas, plus la ville en produit.",
+                    ],
+                    [
+                      'stopsTarget',
+                      'Cible',
+                      2,
+                      15,
+                      "La taille idéale d'un parcours. Le générateur vise ce nombre d'arrêts quand le quartier est assez fourni — c'est ce qui rend les parcours réguliers entre eux.",
+                    ],
+                    [
+                      'stopsMax',
+                      'Maximum',
+                      3,
+                      20,
+                      "Plafond absolu : un parcours ne dépasse jamais ce nombre d'arrêts, même si d'autres lieux restent à proximité.",
+                    ],
+                  ] as const
+                ).map(([key, label, min, max, help]) => (
+                  <div key={key} className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-gray-500">{label}</span>
+                      <span className="text-sm font-black text-nirmie-600">{config[key]}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={min}
+                      max={max}
+                      value={config[key]}
+                      onChange={(e) => setStops(key, Number(e.target.value))}
+                      className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-nirmie-500"
+                    />
+                    <p className="text-[10px] text-gray-400 leading-relaxed">{help}</p>
+                  </div>
+                ))}
+              </div>
+            </Section>
+          )}
+
+          <div className="h-px bg-gray-100" />
+
+          {!byDuration && (
           <Section
             icon={<Ruler className="w-4 h-4 text-nirmie-500" />}
             title={config.travelMode === 'bike' ? 'Longueur du circuit' : 'Longueur de marche'}
@@ -511,8 +625,9 @@ export const RouteConfigPanel: React.FC<Props> = ({
               </button>
             </div>
           </Section>
+          )}
 
-          <div className="h-px bg-gray-100" />
+          {!byDuration && <div className="h-px bg-gray-100" />}
 
           <Section
             icon={<Gauge className="w-4 h-4 text-nirmie-500" />}

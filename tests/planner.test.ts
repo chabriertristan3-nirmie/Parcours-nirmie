@@ -1,4 +1,11 @@
-import { computeCapacity, planRoutes, applyFilters } from '../services/routePlanner';
+import {
+  computeCapacity,
+  planRoutes,
+  applyFilters,
+  estimateTimeModel,
+  stopsForBudget,
+  effectiveSizing,
+} from '../services/routePlanner';
 import { pathLengthM, haversineM, destinationPoint, bearingDeg, tracePathLengthM } from '../services/geo';
 import { safetyExclusion } from '../services/osmService';
 import { pickModel, describeApiError } from '../services/geminiService';
@@ -409,6 +416,91 @@ console.log('\n== Boucles libres : répartition des directions ==');
   const again = Array.from({ length: total }, (_, i) => spreadBearing(i, total, makeRng(99)));
   check('relancer donne d\'autres directions',
     JSON.stringify(bearings) !== JSON.stringify(again));
+}
+
+console.log('\n== Cadrage par le temps ==');
+{
+  const pois = makeCity(60, 17);
+  const base = cfg({ sizingMode: 'duration', paceKmh: 4.2 });
+
+  const model = estimateTimeModel(pois, base);
+  check('visite moyenne mesurée sur les lieux retenus',
+    Math.abs(model.avgVisitMinutes - 20) < 0.01, `${model.avgVisitMinutes.toFixed(1)} min`);
+  check('trajet type déduit de la densité de la ville',
+    model.avgLegMinutes > 0 && model.avgLegMinutes < 30,
+    `${model.avgLegMinutes.toFixed(1)} min entre deux lieux voisins`);
+
+  // Le cœur de la promesse : le temps seul décide du nombre d'arrêts.
+  const stops45 = stopsForBudget(45, model);
+  const stops90 = stopsForBudget(90, model);
+  const stops180 = stopsForBudget(180, model);
+  check('plus de temps => plus d\'arrêts',
+    stops45 < stops90 && stops90 < stops180, `${stops45} / ${stops90} / ${stops180} arrêts`);
+
+  // Vérification par le calcul inverse : le parcours déduit tient-il vraiment
+  // dans le budget ?
+  [60, 90, 150, 240].forEach(budget => {
+    const n = stopsForBudget(budget, model);
+    const spent = n * model.avgVisitMinutes + (n - 1) * model.avgLegMinutes;
+    check(`${budget} min => ${n} arrêts, soit ${Math.round(spent)} min réels`,
+      Math.abs(spent - budget) <= (model.avgVisitMinutes + model.avgLegMinutes) / 2 + 0.01);
+  });
+
+  // Un budget intenable : deux arrêts sont le minimum, et deux visites de
+  // 20 min dépassent déjà 30 min. Le plancher doit tenir, et l'écart être
+  // visible pour que l'interface puisse en avertir.
+  const floored = stopsForBudget(30, model);
+  const flooredSpent = floored * model.avgVisitMinutes + (floored - 1) * model.avgLegMinutes;
+  check('budget trop court => plancher de 2 arrêts, pas de parcours vide',
+    floored === 2, `${floored} arrêts`);
+  check('le dépassement est mesurable par l\'interface',
+    flooredSpent > 30, `${Math.round(flooredSpent)} min pour 30 min demandées`);
+
+  // Et la capacité doit suivre le temps, sans toucher à rien d'autre.
+  const short = computeCapacity(pois, cfg({ sizingMode: 'duration', targetMinutes: 45 }));
+  const long = computeCapacity(pois, cfg({ sizingMode: 'duration', targetMinutes: 180 }));
+  check('parcours courts => la ville en porte davantage',
+    short.maxRoutes > long.maxRoutes,
+    `45 min : ${short.maxRoutes} parcours, 3 h : ${long.maxRoutes} parcours`);
+  check('la durée annoncée retombe sur le budget demandé',
+    Math.abs(short.estimatedMinutes - 45) < 25 && Math.abs(long.estimatedMinutes - 180) < 40,
+    `${short.estimatedMinutes} min et ${long.estimatedMinutes} min`);
+
+  // La distance de marche découle des trajets modélisés, avec une marge — et
+  // jamais d'un « temps restant » qui pourrait être négatif.
+  const sizing = effectiveSizing(pois, cfg({ sizingMode: 'duration', targetMinutes: 120 }));
+  const legMinutes = (sizing.stopsTarget - 1) * model.avgLegMinutes;
+  check('distance déduite des trajets entre arrêts',
+    sizing.maxDistanceKm !== null &&
+      Math.abs(sizing.maxDistanceKm - ((legMinutes * 1.4) / 60) * 4.2) < 0.15,
+    `${sizing.maxDistanceKm} km pour ${Math.round(legMinutes)} min de trajets`);
+  check('la distance déduite laisse de la place au planificateur',
+    (sizing.maxDistanceKm ?? 0) > 0.5, `${sizing.maxDistanceKm} km`);
+
+  // Un budget serré ne doit jamais produire une contrainte absurde.
+  [30, 45, 60, 120, 240].forEach(budget => {
+    const sz = effectiveSizing(pois, cfg({ sizingMode: 'duration', targetMinutes: budget }));
+    check(`budget ${budget} min : distance exploitable`,
+      (sz.maxDistanceKm ?? 0) >= 0.5, `${sz.maxDistanceKm} km pour ${sz.stopsTarget} arrêts`);
+  });
+  check('bornes d\'arrêts encadrant la cible',
+    sizing.stopsMin <= sizing.stopsTarget && sizing.stopsTarget <= sizing.stopsMax,
+    `${sizing.stopsMin} / ${sizing.stopsTarget} / ${sizing.stopsMax}`);
+
+  // Le mode par arrêts ne doit pas être affecté.
+  const manual = cfg({ sizingMode: 'stops', stopsMin: 5, stopsTarget: 7, stopsMax: 9, maxDistanceKm: 3 });
+  const untouched = effectiveSizing(pois, manual);
+  check('mode par arrêts : les réglages passent tels quels',
+    untouched.stopsMin === 5 && untouched.stopsTarget === 7 &&
+    untouched.stopsMax === 9 && untouched.maxDistanceKm === 3);
+
+  // Et la planification doit respecter les bornes déduites du temps.
+  const planned = planRoutes(pois, 'Testville', cfg({ sizingMode: 'duration', targetMinutes: 90 }));
+  const s90 = effectiveSizing(pois, cfg({ sizingMode: 'duration', targetMinutes: 90 }));
+  check('parcours générés dans les bornes déduites',
+    planned.length > 0 &&
+    planned.every(r => r.steps.length >= s90.stopsMin && r.steps.length <= s90.stopsMax),
+    `${planned.length} parcours de ${planned.map(r => r.steps.length).join(', ')} arrêts`);
 }
 
 console.log(failures === 0 ? '\nTous les tests passent.\n' : `\n${failures} test(s) en échec.\n`);

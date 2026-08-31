@@ -60,15 +60,47 @@ capacité = (lieux retenus × réutilisations autorisées) ÷ arrêts minimum pa
 Une ville de 60 lieux, avec des parcours d'au moins 4 arrêts, porte 15 parcours.
 Passez le minimum à 6 : elle en porte 10. C'est le terrain qui décide.
 
+## Cadrer par le temps
+
+Sur l'écran de réglages d'un parcours touristique, deux façons de décider de
+la taille des parcours :
+
+- **Par les arrêts** — vous fixez les bornes min / cible / max, la durée en
+  découle.
+- **Par le temps** — vous donnez le temps dont vous disposez, et *tout* en
+  découle : le nombre d'arrêts, la distance de marche, et donc le nombre de
+  parcours que la ville peut porter.
+
+Le second mode ne demande qu'un seul curseur. Un parcours de n arrêts coûte
+n visites et n−1 trajets, d'où :
+
+```
+arrêts = (temps disponible + trajet type) ÷ (visite moyenne + trajet type)
+```
+
+Les deux termes sont **mesurés sur les lieux réellement retenus**, pas
+supposés : la visite moyenne vient des durées de chaque type de lieu, le
+trajet type de la distance médiane au **deuxième** plus proche voisin. Le
+deuxième, et non le premier : dans une chaîne d'arrêts, le lieu suivant n'est
+presque jamais le plus proche — celui-là vient d'être visité.
+
+La capacité suit alors directement le temps. Dans une même ville : 45 min →
+24 parcours de 2 arrêts, 1 h 30 → 16 parcours de 4 arrêts, 3 h → 9 parcours de
+7 arrêts.
+
+Un budget peut être **intenable** : un parcours ne descend pas sous 2 arrêts,
+et deux musées à 45 min dépassent déjà l'heure et demie. L'écran le signale au
+lieu de livrer silencieusement des parcours deux fois trop longs.
+
 ## Le parcours utilisateur
 
 0. **Type** — parcours touristique ou parcours libre.
 1. **Ville** — saisie du nom, géocodage.
 2. **Lieux** — l'inventaire complet s'affiche : nombre total, répartition par
    thème, carte, notoriété de chaque lieu. On filtre, on écarte, on ajoute.
-3. **Réglages** — nombre d'arrêts (min / cible / max), distance maximale,
-   boucle, composition thématique, réutilisation des lieux. La capacité se
-   recalcule en direct à chaque changement.
+3. **Réglages** — cadrage par le temps ou par les arrêts, boucle, composition
+   thématique, réutilisation des lieux. La capacité se recalcule en direct à
+   chaque changement.
 4. **Parcours** — génération, consultation, export.
 
 ## Qui fait quoi

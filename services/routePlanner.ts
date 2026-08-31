@@ -17,7 +17,14 @@ import {
   RouteStep,
   POI_THEMES,
 } from '../types';
-import { centroid, distanceToNearestM, haversineM, orderStops, pathLengthM } from './geo';
+import {
+  STREET_FACTOR,
+  centroid,
+  distanceToNearestM,
+  haversineM,
+  orderStops,
+  pathLengthM,
+} from './geo';
 import { straightPath } from './routingService';
 
 /** Nombre de parcours dans lesquels un même POI peut apparaître. */
@@ -42,6 +49,128 @@ export const applyFilters = (pois: POI[], filters: PoiFilters): POI[] => {
 };
 
 // --------------------------------------------------------------------------
+// Cadrage par le temps
+// --------------------------------------------------------------------------
+
+/** Ce que « coûte » en temps un arrêt moyen dans cette ville. */
+export interface TimeModel {
+  /** Durée de visite moyenne d'un lieu retenu. */
+  avgVisitMinutes: number;
+  /** Temps de trajet typique entre deux lieux voisins. */
+  avgLegMinutes: number;
+}
+
+/** Valeurs de repli quand le lot est trop maigre pour rien mesurer. */
+const FALLBACK_TIME_MODEL: TimeModel = { avgVisitMinutes: 20, avgLegMinutes: 5 };
+
+/**
+ * Marge sur le budget de marche déduit du temps.
+ *
+ * Le trajet médian décrit un cas typique ; certains enchaînements sont plus
+ * longs. Sans cette marge, la contrainte de distance rejetterait des parcours
+ * pourtant conformes au temps demandé.
+ */
+const WALK_BUDGET_MARGIN = 1.4;
+
+/**
+ * Mesure le rythme réel de la ville : combien de temps prend une visite, et
+ * combien de temps sépare deux arrêts consécutifs.
+ *
+ * On mesure la distance au DEUXIÈME plus proche voisin, pas au premier : dans
+ * une chaîne d'arrêts, le lieu suivant n'est presque jamais le plus proche —
+ * celui-ci vient souvent d'être visité. Le premier voisin sous-estimerait
+ * systématiquement les trajets réels.
+ *
+ * Et on prend la médiane plutôt que la moyenne : une poignée de lieux isolés
+ * en périphérie fausserait la moyenne sans rien dire de la marche en ville.
+ */
+export const estimateTimeModel = (pois: POI[], config: RouteConfig): TimeModel => {
+  if (pois.length < 2) return FALLBACK_TIME_MODEL;
+
+  const avgVisitMinutes =
+    pois.reduce((sum, p) => sum + p.visitMinutes, 0) / pois.length;
+
+  const neighbourM = pois
+    .map((poi) => {
+      const distances = pois
+        .filter((other) => other !== poi)
+        .map((other) => haversineM(poi, other))
+        .sort((a, b) => a - b);
+      return distances[Math.min(1, distances.length - 1)];
+    })
+    .filter((d) => Number.isFinite(d))
+    .sort((a, b) => a - b);
+
+  if (neighbourM.length === 0) return FALLBACK_TIME_MODEL;
+
+  const medianM = neighbourM[Math.floor(neighbourM.length / 2)];
+  const avgLegMinutes = ((medianM * STREET_FACTOR) / 1000 / config.paceKmh) * 60;
+
+  return { avgVisitMinutes, avgLegMinutes };
+};
+
+/**
+ * Combien d'arrêts tiennent dans un budget de temps ?
+ *
+ * Un parcours de n arrêts coûte n visites et n-1 trajets, d'où
+ * `budget = n × visite + (n-1) × trajet`, que l'on renverse.
+ */
+export const stopsForBudget = (budgetMinutes: number, model: TimeModel): number => {
+  const perStop = model.avgVisitMinutes + model.avgLegMinutes;
+  if (perStop <= 0) return 2;
+  return Math.max(2, Math.round((budgetMinutes + model.avgLegMinutes) / perStop));
+};
+
+/** Bornes de taille effectivement appliquées à un parcours. */
+export interface Sizing {
+  stopsMin: number;
+  stopsTarget: number;
+  stopsMax: number;
+  maxDistanceKm: number | null;
+}
+
+/**
+ * Les bornes réellement utilisées, quel que soit le mode de cadrage.
+ *
+ * En mode `duration`, tout découle du temps disponible : le nombre d'arrêts,
+ * puis la distance de marche que le temps restant permet une fois les visites
+ * déduites. C'est ce qui permet de ne régler qu'un seul curseur.
+ */
+export const effectiveSizing = (pois: POI[], config: RouteConfig): Sizing => {
+  if (config.sizingMode !== 'duration') {
+    return {
+      stopsMin: config.stopsMin,
+      stopsTarget: config.stopsTarget,
+      stopsMax: config.stopsMax,
+      maxDistanceKm: config.maxDistanceKm,
+    };
+  }
+
+  const model = estimateTimeModel(pois, config);
+  const target = stopsForBudget(config.targetMinutes, model);
+
+  // Le budget de marche vient du modèle de trajets, pas du temps « restant » :
+  // si les visites mangent tout le budget, un reste négatif donnerait une
+  // distance absurde qui étranglerait la planification.
+  const walkMinutes = (target - 1) * model.avgLegMinutes * WALK_BUDGET_MARGIN;
+
+  return {
+    // Une marge de part et d'autre : tous les quartiers n'ont pas la même
+    // densité, un parcours un peu plus court reste dans l'esprit du budget.
+    stopsMin: Math.max(2, Math.round(target * 0.75)),
+    stopsTarget: target,
+    stopsMax: Math.max(3, Math.round(target * 1.3)),
+    maxDistanceKm: Math.max(0.5, Math.round((walkMinutes / 60) * config.paceKmh * 10) / 10),
+  };
+};
+
+/** Applique le cadrage effectif : le reste du code n'a plus à s'en soucier. */
+const sized = (pois: POI[], config: RouteConfig): RouteConfig => ({
+  ...config,
+  ...effectiveSizing(pois, config),
+});
+
+// --------------------------------------------------------------------------
 // Capacité
 // --------------------------------------------------------------------------
 
@@ -51,7 +180,8 @@ export const applyFilters = (pois: POI[], filters: PoiFilters): POI[] => {
  * C'est le remplacement direct des anciens quotas figés (11 / 16 / 26) :
  * le nombre sort du terrain, pas d'une case cochée.
  */
-export const computeCapacity = (pois: POI[], config: RouteConfig): Capacity => {
+export const computeCapacity = (pois: POI[], rawConfig: RouteConfig): Capacity => {
+  const config = sized(pois, rawConfig);
   const byTheme: Record<string, number> = {};
   POI_THEMES.forEach((theme) => {
     byTheme[theme] = pois.filter((p) => p.theme === theme).length;
@@ -78,12 +208,24 @@ export const computeCapacity = (pois: POI[], config: RouteConfig): Capacity => {
     recommendedRoutes = perTheme.reduce((sum, t) => sum + t.recommended, 0);
   }
 
+  // Durée annoncée : ce que coûtent réellement stopsTarget arrêts dans cette
+  // ville. En mode `duration` elle retombe sur le budget demandé, ce qui rend
+  // l'estimation vérifiable d'un coup d'œil.
+  const model = estimateTimeModel(pois, config);
+  const estimatedEffortMinutes = (config.stopsTarget - 1) * model.avgLegMinutes;
+  const estimatedMinutes =
+    config.stopsTarget * model.avgVisitMinutes + estimatedEffortMinutes;
+
   return {
     poolSize: pois.length,
     maxRoutes,
     recommendedRoutes: Math.min(recommendedRoutes, maxRoutes),
     leftovers: Math.max(0, pois.length - maxRoutes * config.stopsMin),
     byTheme,
+    stopsTarget: config.stopsTarget,
+    estimatedMinutes: Math.round(estimatedMinutes),
+    estimatedEffortMinutes: Math.round(estimatedEffortMinutes),
+    maxDistanceKm: config.maxDistanceKm,
   };
 };
 
@@ -243,7 +385,14 @@ export const buildRoute = (
  * `config.routeCount === null` signifie « donne-moi tout ce que la ville peut
  * porter ». C'est le mode par défaut.
  */
-export const planRoutes = (pois: POI[], city: string, config: RouteConfig): GeneratedRoute[] => {
+export const planRoutes = (
+  pois: POI[],
+  city: string,
+  rawConfig: RouteConfig
+): GeneratedRoute[] => {
+  // Le cadrage par le temps est résolu une fois pour toutes : la planification
+  // ne raisonne plus qu'en nombre d'arrêts et en kilomètres.
+  const config = sized(pois, rawConfig);
   if (pois.length < config.stopsMin) return [];
 
   const capacity = computeCapacity(pois, config);
