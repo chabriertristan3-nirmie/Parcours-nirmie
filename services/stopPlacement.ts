@@ -32,13 +32,14 @@ export const usesForbiddenMode = (maneuvers: RoutedManeuver[]): boolean =>
   maneuvers.some((m) => FORBIDDEN_MODES.includes(m.mode.toLowerCase()));
 
 /**
- * Route numérotée : autoroute, nationale, départementale, métropolitaine.
+ * Route numérotée : autoroute, nationale, départementale, métropolitaine ou
+ * européenne (les « E » se rencontrent parfois seules sur les grands axes).
  *
  * On peut avoir le droit d'y marcher, mais on y marche sur le bas-côté, au
  * bord de la circulation. Ce n'est pas un endroit où envoyer quelqu'un
  * s'arrêter pour regarder son téléphone.
  */
-export const isNumberedRoad = (ref: string): boolean => /^\s*[ANDM]\s*\d/i.test(ref);
+export const isNumberedRoad = (ref: string): boolean => /^\s*[ANDME]\s*\d/i.test(ref);
 
 /** La voie se prête-t-elle à un arrêt ? */
 export const isStoppable = (maneuver: RoutedManeuver): boolean =>
@@ -154,13 +155,23 @@ export interface PlacedStop {
  * Amplitude de recherche autour de la position idéale, en part d'intervalle.
  *
  * À 0,9, on cherche dans presque tout l'intervalle qui revient à cet arrêt —
- * assez pour contourner une longue traversée de départementale — sans jamais
- * empiéter sur l'intervalle du voisin, ce qui inverserait l'ordre des arrêts.
+ * assez pour contourner une longue traversée de départementale. Deux
+ * recherches voisines peuvent alors se chevaucher : c'est l'écart minimal
+ * ci-dessous qui maintient les arrêts distincts et dans l'ordre.
  */
 const SEARCH_SPAN = 0.9;
 
 /** Finesse de la recherche : 60 essais de part et d'autre. */
 const SEARCH_STEPS = 60;
+
+/**
+ * Écart minimal entre deux arrêts, en part d'intervalle.
+ *
+ * Quand presque tout un intervalle est infréquentable, deux arrêts voisins se
+ * rabattraient sur le même bout de rue — deux repères superposés, et un
+ * segment vide entre eux. Plutôt que ça, le second n'est pas posé.
+ */
+const MIN_GAP_RATIO = 0.15;
 
 /** La voie du tracé à une distance donnée du départ. */
 const maneuverAt = (trace: Trace, distanceM: number): RoutedManeuver | undefined =>
@@ -183,10 +194,15 @@ export const placeStops = (trace: Trace, count: number): PlacedStop[] => {
 
   const spacing = trace.totalM / (count + 1);
   const span = spacing * SEARCH_SPAN;
+  const minGap = spacing * MIN_GAP_RATIO;
   const stops: PlacedStop[] = [];
 
   for (let i = 1; i <= count; i++) {
     const ideal = spacing * i;
+    // L'arrêt doit rester après le précédent (l'ordre du parcours), et avant
+    // la fin de la boucle — qui est le départ, on n'y colle pas un repère.
+    const floor = stops.length > 0 ? stops[stops.length - 1].distanceM + minGap : 0;
+    const ceiling = trace.totalM - minGap;
     let chosen: number | undefined;
 
     // On s'écarte progressivement de la position idéale, alternativement d'un
@@ -195,7 +211,7 @@ export const placeStops = (trace: Trace, count: number): PlacedStop[] => {
       const offset = (span * step) / SEARCH_STEPS;
       const candidates = step === 0 ? [ideal] : [ideal - offset, ideal + offset];
       chosen = candidates.find((d) => {
-        if (d <= 0 || d >= trace.totalM) return false;
+        if (d <= floor || d >= ceiling) return false;
         const maneuver = maneuverAt(trace, d);
         return maneuver ? isStoppable(maneuver) : false;
       });

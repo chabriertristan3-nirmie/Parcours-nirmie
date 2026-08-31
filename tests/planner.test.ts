@@ -749,8 +749,8 @@ console.log('\n== Parcours libres : où se posent les arrêts ==');
     stops.map(s => s.lat.toFixed(4)).join(', '));
 
   check('une route numérotée est reconnue',
-    ['D 6007', 'N7', 'A 8', 'M 6007'].every(isNumberedRoad) &&
-    !isNumberedRoad('') && !isNumberedRoad('rue du Marché'));
+    ['D 6007', 'N7', 'A 8', 'M 6007', 'E 15'].every(isNumberedRoad) &&
+    !isNumberedRoad('') && !isNumberedRoad('rue du Marché') && !isNumberedRoad('V 65'));
 
   // Un tracé qui prend le bac ou le train n'est pas une boucle à pied.
   check('un tronçon en bac est détecté',
@@ -777,6 +777,26 @@ console.log('\n== Parcours libres : où se posent les arrêts ==');
   const allRoad = buildTrace([leg('', 'D 12', 'walking', 43.58, 43.60)]);
   check('tracé entièrement à trafic : aucun arrêt posé',
     placeStops(allRoad, 3).length === 0);
+
+  // Une seule fenêtre praticable sur tout le tracé : les deux arrêts ne
+  // doivent pas s'y superposer. Le second n'est pas posé, plutôt que de créer
+  // deux repères au même endroit avec un segment vide entre eux.
+  const narrow = buildTrace([
+    leg('', 'D 12', 'walking', 43.5800, 43.5836),
+    leg('passage du Gué', '', 'walking', 43.5836, 43.5838),
+    leg('', 'D 12', 'walking', 43.5838, 43.5890),
+  ]);
+  const squeezed = placeStops(narrow, 2);
+  check('fenêtre praticable unique : un seul arrêt, pas deux superposés',
+    squeezed.length === 1 && squeezed[0].streetName === 'passage du Gué',
+    `${squeezed.length} arrêt(s) à ${squeezed.map(s => Math.round(s.distanceM)).join(', ')} m`);
+
+  // Quoi qu'il arrive, les arrêts posés sont strictement ordonnés et espacés :
+  // c'est ce que suppose le découpage en segments du mode live.
+  const ordered = placeStops(crossing, 3);
+  check('les arrêts restent ordonnés et espacés même sous contrainte',
+    ordered.every((s, i) => i === 0 || s.distanceM > ordered[i - 1].distanceM + 1),
+    ordered.map(s => `${Math.round(s.distanceM)} m`).join(', '));
 
   // Un point de jonction appartient à la voie que l'on aborde, pas à celle que
   // l'on quitte — sinon le début de chaque rue hériterait du nom de la
@@ -815,6 +835,7 @@ console.log('\n== Règles de sécurité : eau, rail, routes, champs ==');
   check('une emprise ferroviaire est écartée', excluded({ landuse: 'railway' }));
   check('une nationale est écartée', excluded({ highway: 'trunk', name: 'N 7' }));
   check('une départementale à trafic est écartée', excluded({ highway: 'primary' }));
+  check('une bretelle est écartée', excluded({ highway: 'secondary_link' }));
   check('un champ est écarté', excluded({ landuse: 'farmland' }));
   check('une vigne est écartée', excluded({ landuse: 'vineyard' }));
   check('une carrière est écartée', excluded({ landuse: 'quarry' }));

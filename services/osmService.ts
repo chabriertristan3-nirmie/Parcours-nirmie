@@ -124,7 +124,8 @@ export const safetyExclusion = (tags: OsmTags): string | null => {
   const road = tags.highway;
   if (
     road &&
-    ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link']
+    ['motorway', 'trunk', 'primary', 'secondary',
+      'motorway_link', 'trunk_link', 'primary_link', 'secondary_link']
       .includes(road)
   ) {
     return 'voie à fort trafic';
